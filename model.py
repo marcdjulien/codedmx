@@ -16,6 +16,17 @@ class Channel:
         self._value = value
 
 
+class DmxOutput(Channel):
+    def __init__(self, dmx_channel):
+        super().__init__()
+        self.dmx_channel = 0
+        self.history = [0] * 500
+
+    def record(self):
+        self.history.pop(0)
+        self.history.append(self._value)
+
+
 class ChannelLink:
     def __init__(self, src_channel, dst_channel):
         self.src_channel = src_channel
@@ -68,16 +79,9 @@ class NodeCollection:
     """Collection of nodes and their the a set of inputs and outputs"""
 
     def __init__(self):
-        self.inputs: Channel = []
         self.nodes: Node = []  # Needs to be a tree
-        self.outputs: Channel = []
         self.links = []
 
-    def add_input(self, inp: Channel):
-        self.inputs.append(inp)
-
-    def add_output(self, output: Channel):
-        self.outputs.append(output)
 
     def add_node(self, node: Node):
         self.nodes.append(node)
@@ -135,6 +139,7 @@ class Clip:
     def __init__(self):
         self.title = "Untitled"
 
+        self.inputs = []
         self.node_collection = NodeCollection()
 
         # Maps automation to an input or output
@@ -150,14 +155,10 @@ class Clip:
 
     def create_input(self):
         new_inp = Channel("out")
+        self.inputs.append(new_inp)
         new_automation = ChannelAutomation(self.length)
         self.automation_map[new_inp] = new_automation
-        self.node_collection.add_input(new_inp)
-
-    def create_output(self):
-        new_output = Channel("in")
-        self.node_collection.add_output(new_output)
-
+    
     def update(self, beat):
         self.time = (beat * (2**self.speed)) % self.length
         for channel, automation in self.automation_map.items():
@@ -172,6 +173,15 @@ class Track:
     def __init__(self, title, n_clips=20):
         self.name = title
         self.clips = [None] * n_clips
+        self.outputs = []
+
+    def update(self):
+        for output in self.outputs:
+            output.record()
+
+    def create_output(self):
+        new_output = DmxOutput(0)
+        self.outputs.append(new_output)
 
     def __delitem__(self, key):
         del clips[key]
@@ -200,40 +210,59 @@ class ProgramState:
         self.tempo = 120.0
         self.play_time_start = 0
         self.beats_since_start = 0
+
     def update(self):
         if self.playing:
             time_since_start_s = time.time() - self.play_time_start
             self.beats_since_start = time_since_start_s * (1.0/60.0) * self.tempo
 
         for track in self.tracks:
+            track.update()
+
             for clip in track.clips:
                 if clip is not None:
                     clip.update(self.beats_since_start)
 
     def get_clip(self, clip_key):
-        """clip[i,j] -> Clip"""
-        match = re.match(r"clip\[(\d+),(\d+)\]", clip_key)
+        """track[i].clip[j] -> Clip"""
+        match = re.match(r"track\[(\d+)\]\.clip\[(\d+)\]", clip_key)
         if match:
             track_i = int(match.groups()[0])
             clip_i = int(match.groups()[1])
             return self.tracks[track_i][clip_i]
 
-    def get_channel(self, clip, key):
-        def channel(src, in_out_key):
-            match = re.match(r"(in|out)\[(\d+)]", index_key)
+    def get_channel(self, key):
+        """
+        track[a].clip[b]          in[c]
+        track[a]                  out[c]
+        track[a].clip[b].node[c]  in[d]
+        track[a].clip[b].node[c]  in[d]
+        """
+        def channel(obj, in_out_key):
+            match = re.match(r"(in|out)\[(\d+)]", in_out_key)
             if match:
                 in_out, index = match.groups()
-                inout_list = src.inputs if in_out == "in" else src.outputs
+                inout_list = obj.inputs if in_out == "in" else obj.outputs
                 return inout_list[int(index)]
 
-        src_key, index_key = key.split(".")
-        if src_key == "clip":
-            return channel(clip.node_collection, index_key)
-        elif src_key.startswith("node"):
-            match = re.match(r"node\[(\d+)\]", src_key)
+        src_key, in_out_key = key.rsplit(".", 1)
+        
+        src_toks = src_key.split(".")
+        if len(src_toks) == 1:
+            match = re.match(r"track\[(\d+)\]", src_key)
             if match:
-                node_index = int(match.groups()[0])
-                return channel(clip.node_collection.nodes[int(node_index)], index_key)
+                track_i = match.groups()[0]
+                return channel(self.tracks[int(track_i)], in_out_key)
+        elif len(src_toks) == 2:
+            match = re.match(r"track\[(\d+)\]\.clip\[(\d+)\]", src_key)
+            if match:
+                track_i, clip_i = match.groups()
+                return channel(self.tracks[int(track_i)].clips[int(clip_i)], in_out_key)
+        elif len(src_toks) == 3:
+            match = re.match(r"track\[(\d+)\]\.clip\[(\d+)\]\.node\[(\d+)\]", src_key)
+            if match:
+                track_i, clip_i, node_i = match.groups()
+                return channel(self.tracks[int(track_i)].clips[int(clip_i)].node_collection.nodes[int(node_i)], in_out_key)
 
     def execute(self, full_command):
         print(full_command)
@@ -256,29 +285,25 @@ class ProgramState:
             return True
 
         elif cmd == "create_output":
-            clip_id = toks[1]
-            clip = self.get_clip(clip_id)
-            clip.create_output()
+            track_i = int(toks[1])
+            track = self.tracks[track_i]
+            track.create_output()
             return True
 
         elif cmd == "create_link":
-            src = toks[1]
-            dst = toks[2]
+            clip_id = toks[1]
+            src = toks[2]
+            dst = toks[3]
 
-            src_clip_id, src_index_id = src.split(".", 1)
-            dst_clip_id, dst_index_id = dst.split(".", 1)
-            src_clip = self.get_clip(src_clip_id)
-            dst_clip = self.get_clip(dst_clip_id)
-            assert src_clip == dst_clip
+            clip = self.get_clip(clip_id)
 
-            clip = src_clip
-            if src_clip is not None:
-                src_channel = self.get_channel(clip, src_index_id)
-                dst_channel = self.get_channel(clip, dst_index_id)
-                assert src_clip
+            if clip is not None:
+                src_channel = self.get_channel(src)
+                dst_channel = self.get_channel(dst)
+                assert src_channel
                 assert dst_channel
-            src_clip.node_collection.add_link(src_channel, dst_channel)
-            return True
+                clip.node_collection.add_link(src_channel, dst_channel)
+                return True
 
         elif cmd == "create_node":
             clip_id = toks[1]
@@ -295,11 +320,10 @@ class ProgramState:
         elif cmd == "add_automation_point":
             src = toks[1]
             point = toks[2]
-            clip_id, index_id = src.split(".", 1)
-            clip = self.get_clip(clip_id)
+            clip = self.get_clip(src)
             if clip is None:
                 return False
-            input_channel = self.get_channel(clip, index_id)
+            input_channel = self.get_channel(src)
             if input_channel is None:
                 return False
             automation = clip.automation_map[input_channel]
@@ -309,11 +333,10 @@ class ProgramState:
             src = toks[1]
             point_index = toks[2]
             point = toks[3]
-            clip_id, index_id = src.split(".", 1)
-            clip = self.get_clip(clip_id)
+            clip = self.get_clip(src)
             if clip is None:
                 return False
-            input_channel = self.get_channel(clip, index_id)
+            input_channel = self.get_channel(src)
             if input_channel is None:
                 return False
             automation = clip.automation_map[input_channel]
@@ -324,11 +347,11 @@ class ProgramState:
         elif cmd == "remove_automation_point":
             src = toks[1]
             point_index = toks[2]
-            clip_id, index_id = src.split(".", 1)
+            clip_id, _ = src.split(".", 1)
             clip = self.get_clip(clip_id)
             if clip is None:
                 return False
-            input_channel = self.get_channel(clip, index_id)
+            input_channel = self.get_channel(src)
             if input_channel is None:
                 return False
             automation = clip.automation_map[input_channel]
