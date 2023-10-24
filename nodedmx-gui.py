@@ -290,6 +290,22 @@ class Gui:
             for fixture in loaded_fixtures:
                 self.add_fixture(None, None, (self._active_track, fixture))
 
+        with dpg.window(tag="rename_node.popup", label="Rename Node", no_title_bar=True, modal=True, show=False, height=10, pos=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2)):
+            def set_name_property(sender, app_data, user_data):
+                node_editor_tag = get_node_editor_tag(self._active_clip)
+                items = dpg.get_selected_nodes(node_editor_tag)
+                if items and app_data:
+                    item = items[0]
+                    alias = dpg.get_item_alias(item)
+                    node_id = alias.replace(".node", "").rsplit(".", 1)[-1]
+                    obj = self.state.get_obj(node_id)
+                    obj.name = app_data
+                    dpg.configure_item(get_node_tag(self._active_clip, obj), label=obj.name)
+                    dpg.set_value(f"{obj.id}.name", obj.name)
+                dpg.configure_item("rename_node.popup", show=False)
+
+            dpg.add_input_text(tag="rename_node.text", on_enter=True, callback=set_name_property)
+
         with dpg.viewport_menu_bar():
             dpg.add_file_dialog(
                 directory_selector=True, 
@@ -909,15 +925,20 @@ class Gui:
         else: # restore
             clip, node = args
 
-        dpg.configure_item(get_node_window_tag(clip) + ".popup_menu", show=False)
+        if right_click_menu:
+            dpg.configure_item(get_node_window_tag(clip) + ".popup_menu", show=False)
 
         parent = get_node_editor_tag(clip)
         parameters = node.parameters
         input_channels = node.inputs
         output_channels = node.outputs
 
+        window_x, window_y = dpg.get_item_pos(get_node_window_tag(clip))
+        rel_mouse_x = self.mouse_clickr_x - window_x
+        rel_mouse_y = self.mouse_clickr_y - window_y
+
         node_tag = get_node_tag(clip, node)
-        with dpg.node(parent=get_node_editor_tag(clip), tag=node_tag, label=node.name):
+        with dpg.node(parent=get_node_editor_tag(clip), tag=node_tag, label=node.name, pos=(rel_mouse_x, rel_mouse_y) if right_click_menu else (0, 0)):
 
             self.add_node_popup_menu(node_tag, clip, node)
 
@@ -1156,13 +1177,13 @@ class Gui:
                 dpg.add_table_column(label="Value")
 
                 with dpg.table_row():
-                    # No source
+                    # No source since the Node's label can't use a input_text.
                     def set_name_property(sender, app_data, user_data):
                         if app_data:
                             obj.name = app_data
                             dpg.configure_item(get_node_tag(clip, obj), label=obj.name)
                     dpg.add_text(default_value="Name")
-                    dpg.add_input_text(default_value=obj.name, on_enter=True, callback=set_name_property)
+                    dpg.add_input_text(default_value=obj.name, on_enter=True, callback=set_name_property, tag=f"{obj.id}.name")
 
                 if isinstance(obj, model.Parameterized):
                     for parameter_index, parameter in enumerate(obj.parameters):
@@ -1214,7 +1235,7 @@ class Gui:
                             node.name = app_data
                             dpg.configure_item(get_node_tag(clip, node), label=node.name)
                     dpg.add_text(default_value="Name")
-                    dpg.add_input_text(default_value=node.name, on_enter=True, callback=set_name_property)
+                    dpg.add_input_text(default_value=node.name, on_enter=True, callback=set_name_property, tag=f"{node.id}.name")
 
                 # Inputs
                 with dpg.table_row():
@@ -1327,6 +1348,8 @@ class Gui:
                         dpg.set_value(f"{device_parameter_id}.value", obj.get_parameter("device").value)
                         dpg.set_value(f"{id_parameter_id}.value", obj.get_parameter("id").value)
                 dpg.add_menu_item(label="Unmap MIDI", callback=unmap_midi, user_data=obj)
+            if isinstance(obj, (model.FunctionNode, model.ClipInputChannel)):
+                dpg.add_menu_item(label="Delete", callback=self.delete_selected_nodes)
 
     def update_midi_map_node(self, sender, app_data, user_data):
         self.execute_wrapper(f"midi_map {user_data.id}")
@@ -2412,10 +2435,6 @@ class Gui:
         elif key in ["C"]:
             if self.ctrl:
                 self.copy_selected()
-        elif key in ["V"]:
-            if self.ctrl:
-                with self.gui_lock:
-                    self.paste_selected()
         elif key in ["O"]:
             if self.ctrl and self.shift:
                 if self._active_track:
@@ -2437,8 +2456,20 @@ class Gui:
         elif key in ["T"]:
             if self.state.mode == "performance":
                 self.tap_tempo()
+        elif key in ["V"]:
+            if self.ctrl:
+                with self.gui_lock:
+                    self.paste_selected()
         elif key in ["R"]:
-            if self.state.mode == "performance":
+            if self.ctrl:
+                if valid(self._active_clip):
+                    node_editor_tag = get_node_editor_tag(self._active_clip)
+                    items = dpg.get_selected_nodes(node_editor_tag)
+                if items:
+                    dpg.set_value("rename_node.text", "")
+                    dpg.configure_item("rename_node.popup", show=True)
+                    dpg.focus_item("rename_node.text")
+            elif self.state.mode == "performance":
                 self.reset_time()
         elif key in ["N"]:
             if self.ctrl:
@@ -2601,7 +2632,8 @@ class Gui:
         try:
             with open(path + ".gui", 'rb') as f:
                 self.new_gui_state = pickle.load(f)
-        except:
+        except Exception as e:
+            print(e)
             self.new_gui_state = GuiState()
 
         print("[Stopping]")
