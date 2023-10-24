@@ -14,6 +14,7 @@ import mido
 from cProfile import Profile
 from pstats import SortKey, Stats
 
+TOP_LEFT = (0, 18)
 SCREEN_WIDTH = 1940
 SCREEN_HEIGHT = 1150
 PROJECT_EXTENSION = "ndmx"
@@ -182,20 +183,20 @@ class Gui:
 
                                     self.update_clip_window()
 
-                                def open_track_output_configuration_window(sender, app_data, user_data):
+                                def show_track_output_configuration_window(sender, app_data, user_data):
                                     # Hide all track config windows
                                     for track in self.state.tracks:
                                         dpg.configure_item(get_output_configuration_window_tag(track), show=False)
                                     dpg.configure_item(get_output_configuration_window_tag(user_data), show=True)
+                                    dpg.focus_item(get_output_configuration_window_tag(user_data))
                                     
-
                                 text_tag = f"{track.id}.gui.button"
                                 self.add_passive_button(group_tag, text_tag, track.name, single_click_callback=select_track, user_data=track)
 
                                 # Menu for track
                                 for tag in [text_tag, text_tag+".filler"]:
                                     with dpg.popup(tag, mousebutton=1):
-                                        dpg.add_menu_item(label="Properties", callback=open_track_output_configuration_window, user_data=track)
+                                        dpg.add_menu_item(label="Properties", callback=show_track_output_configuration_window, user_data=track)
 
 
                 clips_per_track = len(self.state.tracks[0].clips)
@@ -283,6 +284,12 @@ class Gui:
 
             self.add_custom_function_node(None, None, ("create", ("custom", f"{n_inputs},{n_outputs},{code}", self._active_clip), False))
 
+        def load_custom_fixture(sender, app_data):
+            file_path_name = app_data["file_path_name"]
+            loaded_fixtures = fixtures.parse_fixture(file_path_name)
+            for fixture in loaded_fixtures:
+                self.add_fixture(None, None, (self._active_track, fixture))
+
         with dpg.viewport_menu_bar():
             dpg.add_file_dialog(
                 directory_selector=True, 
@@ -329,11 +336,24 @@ class Gui:
                 modal=True
             )
 
+            dpg.add_file_dialog(
+                directory_selector=False, 
+                show=False, 
+                callback=load_custom_fixture, 
+                tag="open_fixture_dialog",
+                cancel_callback=self.print_callback, 
+                width=700,
+                height=400,
+                modal=True
+            )
+
             for tag in ["open_file_dialog", "save_file_dialog"]:
                 dpg.add_file_extension(f".{PROJECT_EXTENSION}", color=[255, 255, 0, 255], parent=tag)
 
             for tag in ["open_custom_node_dialog", "save_custom_node_dialog"]:
                 dpg.add_file_extension(f".{NODE_EXTENSION}", color=[0, 255, 255, 255], parent=tag)
+
+            dpg.add_file_extension(f".fixture", color=[0, 255, 255, 255], parent="open_fixture_dialog")
 
             with dpg.menu(label="File"):
                 dpg.add_menu_item(label="Open", callback=self.open_menu_callback)
@@ -342,8 +362,8 @@ class Gui:
 
             with dpg.menu(label="View"):
                 def show_io_window():
-                    dpg.configure_item("io.gui.window", show=False); 
-                    dpg.configure_item("io.gui.window", show=True)                    
+                    dpg.configure_item("io.gui.window", show=True); 
+                    dpg.focus_item("io.gui.window")                    
                 dpg.add_menu_item(label="I/O", callback=show_io_window)
 
                 def show_inspector():
@@ -644,6 +664,28 @@ class Gui:
             self.add_link_callback(sender=None, app_data=None, user_data=("restore", clip, link.src_channel, link.dst_channel))
 
 
+    def toggle_node_editor_fullscreen(self):
+        if self.state.mode != "edit":
+            return
+        
+        if not valid(self._active_clip):
+            return
+
+        window_tag = get_node_window_tag(self._active_clip)
+        cur_pos = tuple(dpg.get_item_pos(window_tag))
+        print(cur_pos)
+        if cur_pos == TOP_LEFT:
+            dpg.configure_item(window_tag, pos=self._old_node_editor_pos)
+            dpg.configure_item(window_tag, height=self._old_node_editor_height)
+            dpg.configure_item(window_tag, width=self._old_node_editor_width)
+        else:
+            self._old_node_editor_pos = dpg.get_item_pos(window_tag)
+            self._old_node_editor_height = dpg.get_item_height(window_tag)
+            self._old_node_editor_width = dpg.get_item_width(window_tag)
+            dpg.configure_item(window_tag, pos=TOP_LEFT)
+            dpg.configure_item(window_tag, height=SCREEN_HEIGHT)
+            dpg.configure_item(window_tag, width=SCREEN_WIDTH)
+    
     def add_node_menu(self, parent, clip):
         right_click_menu = "popup_menu" in dpg.get_item_alias(parent)
 
@@ -1242,6 +1284,10 @@ class Gui:
                 dpg.configure_item("connect_to_window", show=False)
 
             with dpg.window(tag="connect_to_window", no_title_bar=True, max_size=(200, 400), pos=(self.mouse_x, self.mouse_y)):
+                    # TODO: Finish
+                    with dpg.menu(label="Search"):
+                        dpg.add_input_text()
+
                     with dpg.menu(label="Clip Outputs"):
                         with dpg.menu(label="All (Starting at)"):
                             for i, output_channel in enumerate(clip.outputs):
@@ -1885,8 +1931,12 @@ class Gui:
                 )
                 dpg.add_button(label="Add Fixture")    
                 with dpg.popup(dpg.last_item(), mousebutton=0):
-                    for Fixture in fixtures.FIXTURES:
-                        dpg.add_menu_item(label=Fixture.name, callback=self.add_fixture, user_data=(track, Fixture))
+                    for fixture in fixtures.FIXTURES:
+                        dpg.add_menu_item(label=fixture.name, callback=self.add_fixture, user_data=(track, fixture))
+
+                    def open_fixture_dialog():
+                        dpg.configure_item("open_fixture_dialog", show=True)
+                    dpg.add_menu_item(label="Custom", callback=open_fixture_dialog)
 
             with dpg.table(header_row=True, tag=output_table_tag, policy=dpg.mvTable_SizingStretchProp):
                 dpg.add_table_column(label="Outputs", tag=f"{output_table_tag}.column.dmx_channel")
@@ -1926,13 +1976,13 @@ class Gui:
 
     def add_fixture(self, sender, app_data, user_data):
         track = user_data[0]
-        Fixture = user_data[1]
-        
-        starting_address = 1
+        fixture = user_data[1]
+        starting_address = fixture.address
+
         for output_channel in track.outputs:
             starting_address = max(starting_address, output_channel.dmx_channel + 1)
 
-        for ch, name in enumerate(Fixture.channels):
+        for ch, name in enumerate(fixture.channels):
             self.add_track_output(None, None, ("create", track))
             output_channel = track.outputs[-1]
             self.update_channel_attr(None, starting_address + ch, (output_channel, "dmx_channel"))
@@ -2189,10 +2239,6 @@ class Gui:
 
     def update_state_from_gui(self):
         pass
-        # TODO: These should be removed and set with on_enter
-        #for output_channel in self.get_all_valid_track_output_channels():
-        #    output_channel.dmx_channel = dpg.get_value(f"{output_channel.id}.dmx_channel")
-        #    output_channel.name = dpg.get_value(f"{output_channel.id}.name")
 
     def update_gui_from_state(self):
         dpg.configure_item("play_button", label="[Pause]" if self.state.playing else "[Play]")
@@ -2351,7 +2397,7 @@ class Gui:
     def key_press_callback(self, sender, app_data, user_data):
         key_n = app_data
         key = chr(key_n)
-
+        #print(key_n)
         if key == " ":
             self.state.playing = not self.state.playing
             if self.state.playing:
@@ -2361,6 +2407,8 @@ class Gui:
         elif key_n in [120]:
             if self._active_input_channel is not None:
                 self.enable_recording_mode(None, None, self._active_input_channel)
+        elif key_n in [9]:
+            self.toggle_node_editor_fullscreen()
         elif key in ["C"]:
             if self.ctrl:
                 self.copy_selected()
