@@ -1953,36 +1953,30 @@ class Gui:
             raise RuntimeError(f"Failed to delete: {link_key}")
         self.update_io_matrix_window(clip)
 
-    # TODO: Separate this into state and GUI parts so that we can delete the state
-    # once, and delete the gui part for each clip (when deleting an output)
-    def _delete_node(self, node_tag, obj_id):
+    def _delete_node_gui(self, node_tag, obj_id):
         all_aliases = [dpg.get_item_alias(item) for item in dpg.get_all_items()]
         obj = self.state.get_obj(obj_id)
-        success = self.execute_wrapper(f"delete {obj_id}")
-        if success:
-            channels_to_delete = []
-            if isinstance(obj, model.Channel):
-                # Input Nodes (also need to delete automation window)
-                channels_to_delete = [obj]
-                automation_window_tag = get_automation_window_tag(obj_id, is_id=True)
-                if automation_window_tag in all_aliases:
-                    dpg.delete_item(automation_window_tag)
+        channels_to_delete = []
+        if isinstance(obj, model.Channel):
+            # Input Nodes (also need to delete automation window)
+            channels_to_delete = [obj]
+            automation_window_tag = get_automation_window_tag(obj_id, is_id=True)
+            if automation_window_tag in all_aliases:
+                dpg.delete_item(automation_window_tag)
 
-            # Function Nodes have their own inputs/outputs that we need to delete
-            # corresponding links.
-            if isinstance(obj, model.FunctionNode):
-                channels_to_delete.extend(obj.inputs)
-                channels_to_delete.extend(obj.outputs)
+        # Function Nodes have their own inputs/outputs that we need to delete
+        # corresponding links.
+        if isinstance(obj, model.FunctionNode):
+            channels_to_delete.extend(obj.inputs)
+            channels_to_delete.extend(obj.outputs)
 
-            self.delete_associated_links(channels_to_delete)
-            
-            # Finally, delete the node from the Node Editor
-            dpg.delete_item(node_tag)
+        self.delete_associated_links(channels_to_delete)
+        
+        # Finally, delete the node from the Node Editor
+        dpg.delete_item(node_tag)
 
-            # Update the matrix
-            self.update_io_matrix_window(self._active_clip)
-        else:
-            self.warning(f"Failed to delete {obj_id}")
+        # Update the matrix
+        self.update_io_matrix_window(self._active_clip)
 
     def delete_associated_links(self, channels):
         # Delete any links attached to this node
@@ -1997,6 +1991,7 @@ class Gui:
     def _delete_track_output(self, _, __, user_data):
         with self.gui_lock:
             track, output_channel = user_data
+            # Delete the entire window, since we will remake it later.
             parent = get_output_configuration_window_tag(track)
             dpg.delete_item(parent)
 
@@ -2006,20 +2001,27 @@ class Gui:
                 for clip_i, clip in enumerate(track.clips):
                     if clip is None:
                         continue
-                    self._delete_node(get_node_tag(clip, output_channel), output_channel.id)
+                    self._delete_node_gui(get_node_tag(clip, output_channel), output_channel.id)
 
+                # Remake the window
                 self.create_track_output_configuration_window(track, show=True)
+            else:
+                RuntimeError(f"Failed to delete: {output_channel.id}")
              
-
     def delete_selected_nodes(self):
         node_editor_tag = get_node_editor_tag(self._active_clip)
 
         for item in dpg.get_selected_nodes(node_editor_tag):                    
             alias = dpg.get_item_alias(item)
             node_id = alias.replace(".node", "").rsplit(".", 1)[-1]
+            # Deleting outputs from the Node Editor GUI is not allowed.
             if "DmxOutput" in node_id:
                 continue
-            self._delete_node(alias, node_id)
+            success = self.execute_wrapper(f"delete {node_id}")
+            if success:
+                self._delete_node_gui(alias, node_id)
+            else:
+                RuntimeError(f"Failed to delete: {node_id}")
 
         for item in dpg.get_selected_links(node_editor_tag):
             alias = dpg.get_item_alias(item)
