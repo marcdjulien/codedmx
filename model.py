@@ -145,6 +145,7 @@ class Parameterized:
 
 
 class ClipInputChannel(Parameterized, Channel):
+    nice_title = "Input"
 
     def __init__(self, direction="in", value=0, dtype="float", name=None):
         self.input_type = dtype
@@ -386,11 +387,14 @@ class FunctionNode(Parameterized, Identifier):
         return data
 
 class FunctionDeleted(FunctionNode):
+    nice_title = "Deleted"
+
     def __init__(self, name):
         super().__init__(name)
         self.deleted = True
 
 class FunctionCustomNode(FunctionNode):
+    nice_title = "Custom"
 
     def __init__(self, args, name="Custom"):
         super().__init__(name)
@@ -509,6 +513,7 @@ class FunctionCustomNode(FunctionNode):
 
 
 class FunctionBinaryOperator(FunctionNode):
+    nice_title = "Binary Operator"
 
     def __init__(self, name="Operator"):
         super().__init__(name)
@@ -546,8 +551,46 @@ class FunctionBinaryOperator(FunctionNode):
         else:
             return super().update_parameter(index, value)
 
+class FunctionScale(FunctionNode):
+    nice_title = "Scale"
+
+    def __init__(self, name="Scale"):
+        super().__init__(name)
+        self.in_min_parameter = Parameter("in.min", 0)
+        self.in_max_parameter = Parameter("in.max", 255)
+        self.out_min_parameter = Parameter("out.min", 0)
+        self.out_max_parameter = Parameter("out.max", 1)
+        self.add_parameter(self.in_min_parameter)
+        self.add_parameter(self.in_max_parameter)
+        self.add_parameter(self.out_min_parameter)
+        self.add_parameter(self.out_max_parameter)
+        self.inputs = [
+            Channel("in", 0, name=f"x"), 
+        ]
+        self.outputs.append(
+            Channel("out", 0, name=f"y")
+        )
+        self.type = "scale"
+
+    def transform(self):
+        in_min = self.in_min_parameter.value
+        in_max = self.in_max_parameter.value
+        out_min = self.out_min_parameter.value
+        out_max = self.out_max_parameter.value
+        x = self.inputs[0].get()
+        y = (((x - in_min)/(in_max - in_min))*(out_max-out_min)) + out_min
+        self.outputs[0].set(y)
+
+    def update_parameter(self, index, value):
+        if self.parameters[index] in [self.in_min_parameter, self.in_max_parameter, self.out_min_parameter, self.out_max_parameter]:
+            self.parameters[index].value = float(value)
+            return True, None
+        else:
+            return super().update_parameter(index, value)
+
 
 class FunctionDemux(FunctionNode):
+    nice_title = "Demux"
 
     clear_values = {
         "bool": 0,
@@ -587,6 +630,7 @@ class FunctionDemux(FunctionNode):
 
 
 class FunctionMultiplexer(FunctionNode):
+    nice_title = "Multiplexer"
 
     def __init__(self, n, name="Multiplexer"):
         super().__init__(name)
@@ -608,6 +652,7 @@ class FunctionMultiplexer(FunctionNode):
 
 
 class FunctionPassthrough(FunctionNode):
+    nice_title = "Passthrough"
 
     def __init__(self, name="Passthrough"):
         super().__init__(name)
@@ -620,6 +665,7 @@ class FunctionPassthrough(FunctionNode):
 
 
 class FunctionChanging(FunctionNode):
+    nice_title = "Changing"
 
     def __init__(self, name="Changing"):
         super().__init__(name)
@@ -642,6 +688,7 @@ class FunctionChanging(FunctionNode):
 
 
 class FunctionToggleOnChange(FunctionNode):
+    nice_title = "Toggle On Change"
 
     def __init__(self, name="ToggleOnChange"):
         super().__init__(name)
@@ -667,6 +714,7 @@ class FunctionToggleOnChange(FunctionNode):
         
 
 class FunctionLastChanged(FunctionNode):
+    nice_title = "Last Changed"
 
     def __init__(self, n, name="LastChanged"):
         super().__init__(name)
@@ -698,6 +746,7 @@ class FunctionLastChanged(FunctionNode):
 
 
 class FunctionAggregator(FunctionNode):
+    nice_title = "Aggregator"
 
     def __init__(self, n, name="Aggregator"):
         super().__init__(name)
@@ -715,6 +764,7 @@ class FunctionAggregator(FunctionNode):
 
 
 class FunctionSeparator(FunctionNode):
+    nice_title = "Separator"
 
     def __init__(self, n, name="Separator"):
         super().__init__(name)
@@ -733,6 +783,7 @@ class FunctionSeparator(FunctionNode):
 
 
 class FunctionRandom(FunctionNode):
+    nice_title = "Random"
 
     def __init__(self, name="Random"):
         super().__init__(name)
@@ -754,6 +805,7 @@ class FunctionRandom(FunctionNode):
 
 
 class FunctionSample(FunctionNode):
+    nice_title = "Sample"
 
     def __init__(self, name="Sample"):
         super().__init__(name)
@@ -783,6 +835,7 @@ class FunctionSample(FunctionNode):
 
 
 class FunctionBuffer(FunctionNode):
+    nice_title = "Buffer"
 
     def __init__(self, name="Buffer"):
         super().__init__(name)
@@ -823,6 +876,7 @@ class FunctionBuffer(FunctionNode):
 
 
 class FunctionCanvas1x8(FunctionNode):
+    nice_title = "Canvas 1x8"
 
     def __init__(self, name="Canvas1x8"):
         super().__init__(name)
@@ -859,6 +913,7 @@ class FunctionCanvas1x8(FunctionNode):
                     self.outputs[(i*3) + (j)].set(color[j])
 
 class FunctionPixelMover1(FunctionNode):
+    nice_title = "Pixel Mover"
 
     def __init__(self, name="PixelMover1"):
         super().__init__(name)
@@ -995,7 +1050,7 @@ class NodeCollection:
 
 
 class ChannelAutomation(Identifier):
-    interpolation_type = {
+    default_interpolation_type = {
         "bool": "previous",
         "int": "linear",
         "float": "linear",
@@ -1010,6 +1065,7 @@ class ChannelAutomation(Identifier):
         self.f = None if clear else scipy.interpolate.interp1d(self.values_x, self.values_y)
         self.dtype = dtype
         self.name = name
+        self.interpolation = self.default_interpolation_type[self.dtype]
 
     def value(self, beat_time):
         if self.f is None:
@@ -1069,13 +1125,17 @@ class ChannelAutomation(Identifier):
         self.values_y[index] = p1[1]
         self.reinterpolate()
 
+    def set_interpolation(self, kind):
+        self.interpolation = kind
+        self.reinterpolate()
+
     def reinterpolate(self):
         values_x = [x for x in self.values_x if x is not None]
         values_y = [y for y in self.values_y if y is not None]
         self.f = scipy.interpolate.interp1d(
             values_x, 
             values_y, 
-            kind=self.interpolation_type[self.dtype], 
+            kind=self.interpolation, 
             assume_sorted=False
         )
 
@@ -1105,6 +1165,7 @@ class ChannelAutomation(Identifier):
             return data
         data.append(f"{auto_ptr}.length:{repr(self.length)}")
         data.append(f"{auto_ptr}.name:{repr(self.name)}")
+        data.append(f"{auto_ptr}.interpolation:{repr(self.interpolation)}")
         for point_i in range(len(self.values_x)):
             x, y = self.values_x[point_i], self.values_y[point_i]
             if x is None:
@@ -1552,6 +1613,8 @@ class ProgramState(Identifier):
                 node = clip.node_collection.add_node(None, None)
             elif type_id == "binary_operator":
                 node = clip.node_collection.add_node(FunctionBinaryOperator, None)
+            elif type_id == "scale":
+                node = clip.node_collection.add_node(FunctionScale, None)
             elif type_id == "demux":
                 n = int(args)
                 node = clip.node_collection.add_node(FunctionDemux, n)

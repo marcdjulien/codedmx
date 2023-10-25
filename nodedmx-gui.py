@@ -38,7 +38,6 @@ def valid(*objs):
         for obj in objs
     ])
 
-
 class GuiState:
     def __init__(self):
         self.node_positions = {}
@@ -425,6 +424,16 @@ class Gui:
                 dpg.add_string_value(default_value="", tag="io_matrix.destination_filter_text")
                 dpg.add_string_value(default_value="", tag="last_midi_message")
 
+            # Themes
+            with dpg.theme(tag="bg_line.theme"):
+                with dpg.theme_component(dpg.mvAll):
+                    dpg.add_theme_color(dpg.mvPlotCol_Line, (255, 255, 255, 30), category=dpg.mvThemeCat_Plots)
+                    dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1, category=dpg.mvThemeCat_Plots)
+
+            with dpg.theme(tag="automation_line.theme"):
+                with dpg.theme_component(dpg.mvAll):
+                    dpg.add_theme_color(dpg.mvPlotCol_Line, (0, 200, 255), category=dpg.mvThemeCat_Plots)
+                    dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 3, category=dpg.mvThemeCat_Plots)
 
         ################
         #### Restore ###
@@ -714,58 +723,55 @@ class Gui:
             dpg.add_menu_item(label="MIDI", callback=self.add_input_node, user_data=("create", (clip, "midi"), right_click_menu))
 
         with dpg.menu(parent=parent, label="Functions"):
-            dpg.add_menu_item(
-                label="Binary Operator", user_data=("create", ("binary_operator", ",", clip), right_click_menu), callback=self.add_function_node
-            )
-            with dpg.menu(label="Demux"):
-                for i in range(2, 33):
-                    dpg.add_menu_item(  
-                        label=i, user_data=("create", ("demux", i, clip), right_click_menu), callback=self.add_function_node
-                    )
-            with dpg.menu(label="Multiplexer"):
-                for i in range(2, 16):
-                    dpg.add_menu_item(  
-                        label=i, user_data=("create", ("multiplexer", i, clip), right_click_menu), callback=self.add_function_node
-                    )
             with dpg.menu(label="Aggregator"):
-                for i in range(2, 16):
+                for i in range(2, 33):
                     dpg.add_menu_item(  
                         label=i, user_data=("create", ("aggregator", i, clip), right_click_menu), callback=self.add_function_node
                     )
-            with dpg.menu(label="Separator"):
-                for i in range(2, 16):
-                    dpg.add_menu_item(  
-                        label=i, user_data=("create", ("separator", i, clip), right_click_menu), callback=self.add_function_node
-                    )
             dpg.add_menu_item(
-                label="Random", user_data=("create", ("random", ",", clip), right_click_menu), callback=self.add_function_node
-            )                
-            dpg.add_menu_item(
-                label="Sample", user_data=("create", ("sample", ",", clip), right_click_menu), callback=self.add_function_node
-            ) 
+                label="Binary Operator", user_data=("create", ("binary_operator", ",", clip), right_click_menu), callback=self.add_function_node
+            )
             dpg.add_menu_item(
                 label="Buffer", user_data=("create", ("buffer", ",", clip), right_click_menu), callback=self.add_function_node
             )   
             dpg.add_menu_item(
                 label="Changing", user_data=("create", ("changing", ",", clip), right_click_menu), callback=self.add_function_node
             )   
-            dpg.add_menu_item(
-                label="ToggleOnChange", user_data=("create", ("toggle_on_change", ",", clip), right_click_menu), callback=self.add_function_node
-            )   
+            with dpg.menu(label="Demux"):
+                for i in range(2, 33):
+                    dpg.add_menu_item(  
+                        label=i, user_data=("create", ("demux", i, clip), right_click_menu), callback=self.add_function_node
+                    )
             with dpg.menu(label="Last Changed"):
-                for i in range(2, 16):
+                for i in range(2, 33):
                     dpg.add_menu_item(  
                         label=i, user_data=("create", ("last_changed", i, clip), right_click_menu), callback=self.add_function_node
                     )  
+            with dpg.menu(label="Multiplexer"):
+                for i in range(2, 33):
+                    dpg.add_menu_item(  
+                        label=i, user_data=("create", ("multiplexer", i, clip), right_click_menu), callback=self.add_function_node
+                    )
             dpg.add_menu_item(
                 label="Passthrough", user_data=("create", ("passthrough", ",", clip), right_click_menu), callback=self.add_function_node
             )   
             dpg.add_menu_item(
-                label="Canvas 1x8", user_data=("create", ("canvas1x8", ",", clip), right_click_menu), callback=self.add_function_node
-            )   
+                label="Random", user_data=("create", ("random", ",", clip), right_click_menu), callback=self.add_function_node
+            )           
             dpg.add_menu_item(
-                label="Pixel Mover 1", user_data=("create", ("pixelmover1", ",", clip), right_click_menu), callback=self.add_function_node
-            )
+                label="Scale", user_data=("create", ("scale", ",", clip), right_click_menu), callback=self.add_function_node
+            )     
+            dpg.add_menu_item(
+                label="Sample", user_data=("create", ("sample", ",", clip), right_click_menu), callback=self.add_function_node
+            ) 
+            with dpg.menu(label="Separator"):
+                for i in range(2, 13):
+                    dpg.add_menu_item(  
+                        label=i, user_data=("create", ("separator", i, clip), right_click_menu), callback=self.add_function_node
+                    )
+            dpg.add_menu_item(
+                label="ToggleOnChange", user_data=("create", ("toggle_on_change", ",", clip), right_click_menu), callback=self.add_function_node
+            )   
         with dpg.menu(parent=parent,label="Custom"):
             dpg.add_menu_item(
                 label="New Custom Node", user_data=("create", ("custom", ",", clip), right_click_menu), callback=self.add_custom_function_node
@@ -1177,6 +1183,10 @@ class Gui:
                 dpg.add_table_column(label="Value")
 
                 with dpg.table_row():
+                    dpg.add_text(default_value="Type")
+                    dpg.add_text(default_value=obj.nice_title)
+
+                with dpg.table_row():
                     # No source since the Node's label can't use a input_text.
                     def set_name_property(sender, app_data, user_data):
                         if app_data:
@@ -1186,18 +1196,6 @@ class Gui:
                     dpg.add_input_text(default_value=obj.name, on_enter=True, callback=set_name_property, tag=f"{obj.id}.name")
 
                 if isinstance(obj, model.Parameterized):
-                    for parameter_index, parameter in enumerate(obj.parameters):
-                        with dpg.table_row():
-                            dpg.add_text(default_value=parameter.name)
-                            dpg.add_input_text(
-                                source=f"{parameter.id}.value",
-                                callback=self.update_parameter, 
-                                user_data=(clip, obj, parameter_index), 
-                                default_value=parameter.value if parameter.value is not None else "",
-                                on_enter=True,
-                            )
-
-                if isinstance(obj, model.FunctionNode):
                     for parameter_index, parameter in enumerate(obj.parameters):
                         with dpg.table_row():
                             dpg.add_text(default_value=parameter.name)
@@ -1436,6 +1434,8 @@ class Gui:
             src_channels.extend(src.outputs)
 
         for src_channel in src_channels:
+            if any(link.src_channel == src_channel and valid(link) for link in clip.node_collection.links):
+                continue
             for dst_channel in dst_channels:
                 if any(link.dst_channel == dst_channel and valid(link) for link in clip.node_collection.links):
                     continue
@@ -1671,13 +1671,16 @@ class Gui:
                 dpg.add_tab_button(label="+", callback=add_preset, user_data=input_channel, trailing=True)
 
 
+            
             with dpg.plot(label=input_channel.active_automation.name, height=-1, width=-1, tag=plot_tag, query=True, callback=self.print_callback, anti_aliased=True, no_menus=True):
                 min_value = input_channel.get_parameter("min").value
                 max_value = input_channel.get_parameter("max").value
-                dpg.add_plot_axis(dpg.mvXAxis, label="x", tag=f"{plot_tag}.x_axis_limits", no_gridlines=True)
+                x_axis_limits_tag = f"{plot_tag}.x_axis_limits"
+                y_axis_limits_tag = f"{plot_tag}.y_axis_limits"
+                dpg.add_plot_axis(dpg.mvXAxis, label="x", tag=x_axis_limits_tag, no_gridlines=True)
                 dpg.set_axis_limits(dpg.last_item(), -AXIS_MARGIN, input_channel.active_automation.length+AXIS_MARGIN)
 
-                dpg.add_plot_axis(dpg.mvYAxis, label="y", tag=f"{plot_tag}.y_axis_limits", no_gridlines=True)
+                dpg.add_plot_axis(dpg.mvYAxis, label="y", tag=y_axis_limits_tag, no_gridlines=True)
                 dpg.set_axis_limits(dpg.last_item(), -min_value, max_value*1.01)
 
                 dpg.add_line_series(
@@ -1696,12 +1699,12 @@ class Gui:
                     vertical=True,
                     default_value=0,
                 )
-                dpg.add_drag_line(
+                dpg.add_line_series(
+                    parent=y_axis_limits_tag,
                     label="Ext Value",
                     tag=ext_value_tag,
-                    color=[255, 255, 255, 50],
-                    vertical=False,
-                    default_value=0,
+                    x=dpg.get_axis_limits(x_axis_limits_tag),
+                    y=dpg.get_axis_limits(y_axis_limits_tag),
                 )
                 with dpg.popup(plot_tag, mousebutton=1):
                     dpg.add_menu_item(label="Duplicate", callback=self.double_automation)
@@ -1712,10 +1715,27 @@ class Gui:
                         dpg.add_menu_item(label="1/4", callback=self.set_quantize, user_data=1)
                         dpg.add_menu_item(label="1/8", callback=self.set_quantize, user_data=0.5)
                         dpg.add_menu_item(label="1/16", callback=self.set_quantize, user_data=0.25)
+                    with dpg.menu(label="Interpolation Mode"):
+                        dpg.add_menu_item(label="Linear", callback=self.set_interpolation, user_data="linear")
+                        dpg.add_menu_item(label="Nearest", callback=self.set_interpolation, user_data="nearest")
+                        dpg.add_menu_item(label="Nearest Up", callback=self.set_interpolation, user_data="nearest-up")
+                        dpg.add_menu_item(label="Zero", callback=self.set_interpolation, user_data="zero")
+                        dpg.add_menu_item(label="S-Linear", callback=self.set_interpolation, user_data="slinear")
+                        dpg.add_menu_item(label="Quadratic", callback=self.set_interpolation, user_data="quadratic")
+                        dpg.add_menu_item(label="Cubic", callback=self.set_interpolation, user_data="cubic")
+                        dpg.add_menu_item(label="Previous", callback=self.set_interpolation, user_data="previous")
+                        dpg.add_menu_item(label="Next", callback=self.set_interpolation, user_data="next")
 
+            dpg.bind_item_theme(ext_value_tag, "bg_line.theme")
+            dpg.bind_item_theme(series_tag, "automation_line.theme")
 
     def set_quantize(self, sender, app_data, user_data):
         self._quantize_amount = user_data
+        self.reset_automation_plot(self._active_input_channel)
+
+    def set_interpolation(self, sender, app_data, user_data):
+        if valid(self._active_input_channel.active_automation):
+            self._active_input_channel.active_automation.set_interpolation(user_data)
         self.reset_automation_plot(self._active_input_channel)
 
     def double_automation(self):
@@ -1769,32 +1789,28 @@ class Gui:
         self.gui_state.point_tags = point_tags
 
         # Add quantization bars
+        y_limits = dpg.get_axis_limits(y_axis_limits_tag)
         if self._quantize_amount is not None:
             i = 0
             while True:
-                tag = f"gui.quantization_bar.{i}"
+                tag = f"gui.quantization_series.{i}"
                 if dpg.does_item_exist(tag):
                     dpg.delete_item(tag)
                 else:
                     break
                 i += 1
 
-            def fix_position_callback(sender, app_data, user_data):
-                dpg.set_value(sender, user_data)
-
             n_bars = int(input_channel.active_automation.length / self._quantize_amount)
             for i in range(n_bars+1):
-                tag = f"gui.quantization_bar.{i}"
+                tag = f"gui.quantization_series.{i}"
                 value = i * self._quantize_amount
-                dpg.add_drag_line(
+                dpg.add_line_series(
+                    x=[value, value],
+                    y=y_limits,
                     tag=tag,
-                    color=[255, 255, 255, 50],
-                    vertical=True,
-                    default_value=value,
-                    parent=get_plot_tag(input_channel),
-                    callback=fix_position_callback,
-                    user_data=value
+                    parent=y_axis_limits_tag,
                 )
+                dpg.bind_item_theme(tag, "bg_line.theme")
 
     def create_inspector_window(self):
         with dpg.window(
@@ -2321,7 +2337,13 @@ class Gui:
                     playhead_tag, 
                     self._active_input_channel.last_beat % self._active_input_channel.active_automation.length if self._active_input_channel.mode in ["automation", "armed", "recording"] else 0
                 )
-                dpg.set_value(ext_value_tag, self._active_input_channel.ext_get())
+
+                x_axis_limits_tag = f"{self._active_input_channel.id}.plot.x_axis_limits"
+                dpg.configure_item(
+                    ext_value_tag, 
+                    x=dpg.get_axis_limits(x_axis_limits_tag),
+                    y=[self._active_input_channel.ext_get(), self._active_input_channel.ext_get()]
+                )
 
         if model.LAST_MIDI_MESSAGE is not None:
             device_name, message = model.LAST_MIDI_MESSAGE
@@ -2458,7 +2480,6 @@ class Gui:
                 self.tap_tempo()
         elif key in ["V"]:
             if self.ctrl:
-                with self.gui_lock:
                     self.paste_selected()
         elif key in ["R"]:
             if self.ctrl:
