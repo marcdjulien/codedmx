@@ -266,7 +266,7 @@ class ClipInputChannel(Parameterized, Channel):
 class DmxOutput(Channel):
     def __init__(self, dmx_channel):
         super().__init__(direction="in", dtype="int", name=f"DMX CH. {dmx_channel}")
-        self.dmx_channel = 1
+        self.dmx_channel = dmx_channel
         self.history = [0] * 500
 
     def record(self):
@@ -1272,7 +1272,7 @@ class Track(Identifier):
 
     def create_output(self):
         n = len(self.outputs)
-        new_output = DmxOutput(0)
+        new_output = DmxOutput(len(self.outputs) + 1)
         self.outputs.append(new_output)
         return new_output
 

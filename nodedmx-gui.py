@@ -2037,7 +2037,7 @@ class Gui:
                     dpg.add_menu_item(label="Custom", callback=open_fixture_dialog)
 
             with dpg.table(header_row=True, tag=output_table_tag, policy=dpg.mvTable_SizingStretchProp):
-                dpg.add_table_column(label="Outputs", tag=f"{output_table_tag}.column.dmx_channel")
+                dpg.add_table_column(label="DMX Ch.", tag=f"{output_table_tag}.column.dmx_channel")
                 dpg.add_table_column(label="Name", tag=f"{output_table_tag}.column.name")
                 dpg.add_table_column(tag=f"{output_table_tag}.column.delete", width=10)
 
@@ -2063,7 +2063,7 @@ class Gui:
         output_table_row_tag = f"{output_table_tag}.{output_channel.id}.gui.row"
         with dpg.table_row(parent=output_table_tag, tag=output_table_row_tag):
             dpg.add_input_int(tag=f"{output_channel.id}.dmx_channel", width=75, default_value=output_channel.dmx_channel, callback=self.update_channel_attr, user_data=(output_channel, "dmx_channel"))
-            dpg.add_input_text(tag=f"{output_channel.id}.name", default_value=output_channel.name, callback=self.update_channel_attr, user_data=(output_channel, "name"), width=80)
+            dpg.add_input_text(tag=f"{output_channel.id}.name", default_value=output_channel.name, callback=self.update_channel_attr, user_data=(output_channel, "name"), width=150)
             dpg.add_button(label="X", callback=self._delete_track_output, user_data=(track, output_channel))
 
         # Add a Node to each clip's node editor
