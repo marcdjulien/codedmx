@@ -1302,10 +1302,69 @@ class Gui:
                 self.connect_nodes(*user_data)
                 dpg.configure_item("connect_to_window", show=False)
 
+            def toggle_node_connection(sender, app_data, user_data):
+                clip, src, dst_channel = user_data
+                if isinstance(src, model.FunctionNode):
+                    if app_data: 
+                        for channel in src.outputs:
+                            if any(link.src_channel == channel and valid(link) for link in clip.node_collection.links):
+                                continue
+                            src_channel = channel
+                            break
+                        else:
+                            return
+                    else:
+                        for channel in src.outputs:
+                            if ((link.src_channel == channel and link.dst_channel == dst_channel) and valid(link) 
+                                for link in clip.node_collection.links):
+                                src_channel = channel
+                                break
+                        else:
+                            return
+                else:
+                    src_channel = src
+
+                if app_data:
+                    self.add_link_callback(None, None, ("create", clip, src_channel, dst_channel))
+                else:
+                    link_key = f"{get_node_attribute_tag(clip, src_channel)}:{get_node_attribute_tag(clip, dst_channel)}.gui.link"
+                    self.delete_link_callback(None, link_key, (None, clip))
+
             with dpg.window(tag="connect_to_window", no_title_bar=True, max_size=(200, 400), pos=(self.mouse_x, self.mouse_y)):
-                    # TODO: Finish
-                    with dpg.menu(label="Search"):
-                        dpg.add_input_text()
+                    with dpg.menu(label="Search", tag="connect_to_window_search_menu"):
+                        def join(str1, str2):
+                            return f"{str1}.{str2}"
+
+                        def get_all_dsts(search_terms=""):
+                            def matching(name, toks):
+                                return all(tok.lower() in name.lower() for tok in toks) or not toks
+                            dsts = []
+                            for channel in self.get_all_valid_dst_channels(self._active_clip):
+                                if matching(join("Output", channel.name), search_terms.split()):
+                                    dsts.append(("Output", channel))
+                            return dsts
+
+                        def update_list(sender, app_data):
+                            i = 0
+                            while True:
+                                tag = f"connect_to_window_search_menu.list.{i}"
+                                if dpg.does_item_exist(tag):
+                                    dpg.delete_item(tag)
+                                else:
+                                    break
+                                i += 1
+                            for i, (name, dst_channel) in enumerate(get_all_dsts(app_data)):
+                                dpg.add_selectable(
+                                    label=join(name, dst_channel.name), 
+                                    parent="connect_to_window_search_menu", 
+                                    tag=f"connect_to_window_search_menu.list.{i}",
+                                    callback=toggle_node_connection,
+                                    user_data=(clip, src, dst_channel),
+                                    default_value=clip.node_collection.link_exists(src, dst_channel),
+                                    disable_popup_close=True,
+                                )
+
+                        dpg.add_input_text(tag="connect_to_window_search_text", callback=update_list)
 
                     with dpg.menu(label="Clip Outputs"):
                         with dpg.menu(label="All (Starting at)"):
