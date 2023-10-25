@@ -409,7 +409,7 @@ class Gui:
             dpg.add_input_float(label="Tempo", default_value=self.state.tempo, pos=(transport_start_x + 75, 0), on_enter=True, callback=update_tempo, width=45, tag="tempo", step=0)
 
             def toggle_play(sender):
-                self.state.playing = not self.state.playing
+                self.state.toggle_play()
             dpg.add_button(label="[Play]", callback=toggle_play, pos=(transport_start_x + 165, 0), tag="play_button")
 
             def mode_change():
@@ -626,6 +626,7 @@ class Gui:
                 minimap=True,
                 minimap_location=dpg.mvNodeMiniMap_Location_BottomRight
             )
+
             with dpg.menu_bar() as menu_tag:
                 self.add_node_menu(menu_tag, clip)
 
@@ -673,7 +674,10 @@ class Gui:
         for output_index, output_channel in enumerate(clip.outputs):
             if output_channel.deleted:
                 continue
-            self.add_output_node(clip, output_channel)
+            if isinstance(output_channel, model.DmxOutputGroup):
+                self.add_output_group_node(clip, output_channel)
+            else:
+                self.add_output_node(clip, output_channel)
 
         for node_index, node in enumerate(clip.node_collection.nodes):
             if node.deleted:
@@ -769,9 +773,16 @@ class Gui:
                     dpg.add_menu_item(  
                         label=i, user_data=("create", ("separator", i, clip), right_click_menu), callback=self.add_function_node
                     )
+            with dpg.menu(label="Time"):
+                dpg.add_menu_item(
+                    label="Beat", user_data=("create", ("time_beat", ",", clip), right_click_menu), callback=self.add_function_node
+                ) 
+                dpg.add_menu_item(
+                    label="Second", user_data=("create", ("time_s", ",", clip), right_click_menu), callback=self.add_function_node
+                ) 
             dpg.add_menu_item(
                 label="ToggleOnChange", user_data=("create", ("toggle_on_change", ",", clip), right_click_menu), callback=self.add_function_node
-            )   
+            )
         with dpg.menu(parent=parent,label="Custom"):
             dpg.add_menu_item(
                 label="New Custom Node", user_data=("create", ("custom", ",", clip), right_click_menu), callback=self.add_custom_function_node
@@ -1143,7 +1154,7 @@ class Gui:
                 dpg.add_input_int(label="In", tag=get_output_node_value_tag(clip, output_channel), width=50, readonly=True, step=0)
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                dpg.add_input_int(label="Ch.", source=f"{output_channel.id}.dmx_channel", width=50, readonly=True, step=0)
+                dpg.add_input_int(label="Ch.", source=f"{output_channel.id}.dmx_address", width=50, readonly=True, step=0)
 
             with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
                 dpg.add_text(source=f"{output_channel.id}.name", default_value=output_channel.name)
@@ -1160,6 +1171,37 @@ class Gui:
             with dpg.item_handler_registry(tag=handler_registry_tag) as handler:
                 dpg.add_item_clicked_handler(callback=output_selected_callback, user_data=output_channel)
             dpg.bind_item_handler_registry(node_tag, handler_registry_tag)
+
+        self.update_io_matrix_window(clip)
+
+    def add_output_group_node(self, clip, output_channel_group):
+        # This is the id used when adding links.
+        node_tag = get_node_tag(clip, output_channel_group)
+        if dpg.does_item_exist(node_tag):
+            return
+
+        with dpg.node(label=output_channel_group.name, tag=node_tag, parent=get_node_editor_tag(clip)):
+
+            self.add_node_popup_menu(node_tag, clip, output_channel_group)
+
+            for i, output_channel in enumerate(output_channel_group.outputs):
+                attr_tag = get_node_attribute_tag(clip, output_channel)
+                with dpg.node_attribute(tag=attr_tag):
+                    print(get_output_node_value_tag(clip, output_channel))
+                    dpg.add_input_int(label=output_channel.name.split(".")[-1] + f" [{output_channel.dmx_address}]", tag=get_output_node_value_tag(clip, output_channel), width=50, readonly=True, step=0)
+
+                # When user clicks on the output node it will populate the inspector.
+                def output_selected_callback(sender, app_data, user_data):
+                    # Right click menu
+                    if app_data[0] == 1:
+                        dpg.configure_item(f"{node_tag}.popup", show=True)
+                    else:
+                        self._active_output_channel_group = user_data
+
+                #handler_registry_tag = f"{node_tag}.item_handler_registry"
+                #with dpg.item_handler_registry(tag=handler_registry_tag) as handler:
+                #    dpg.add_item_clicked_handler(callback=output_selected_callback, user_data=output_channel)
+                #dpg.bind_item_handler_registry(attr_tag, handler_registry_tag)
 
         self.update_io_matrix_window(clip)
 
@@ -1366,12 +1408,13 @@ class Gui:
 
                         dpg.add_input_text(tag="connect_to_window_search_text", callback=update_list)
 
+                    clip_output_channels = self.get_all_valid_track_output_channels(self._active_clip)
                     with dpg.menu(label="Clip Outputs"):
                         with dpg.menu(label="All (Starting at)"):
-                            for i, output_channel in enumerate(clip.outputs):
-                                dpg.add_menu_item(label=output_channel.name, callback=connect_node_and_hide_window, user_data=(clip, src, clip.outputs[i::]))
+                            for i, output_channel in enumerate(clip_output_channels):
+                                dpg.add_menu_item(label=output_channel.name, callback=connect_node_and_hide_window, user_data=(clip, src, clip_output_channels[i::]))
 
-                        for output_channel in clip.outputs:
+                        for i, output_channel in enumerate(clip_output_channels):
                             if valid(output_channel):
                                 dpg.add_menu_item(label=output_channel.name, callback=connect_node_and_hide_window, user_data=(clip, src, [output_channel]))
 
@@ -1570,7 +1613,7 @@ class Gui:
                 for dst_index, (name, dst_channel) in enumerate(dsts):
                     text = join(name, dst_channel.name)
                     xpos = x_start + xsum*8
-                    if hasattr(dst_channel, "dmx_channel"):
+                    if hasattr(dst_channel, "dmx_address"):
                         # Should match the link naming scheme
                         tag = get_node_attribute_tag(clip, dst_channel).replace(".node", ".io_matrix_text")
                     else: # a track output
@@ -2037,7 +2080,7 @@ class Gui:
                     dpg.add_menu_item(label="Custom", callback=open_fixture_dialog)
 
             with dpg.table(header_row=True, tag=output_table_tag, policy=dpg.mvTable_SizingStretchProp):
-                dpg.add_table_column(label="DMX Ch.", tag=f"{output_table_tag}.column.dmx_channel")
+                dpg.add_table_column(label="DMX Ch.", tag=f"{output_table_tag}.column.dmx_address")
                 dpg.add_table_column(label="Name", tag=f"{output_table_tag}.column.name")
                 dpg.add_table_column(tag=f"{output_table_tag}.column.delete", width=10)
 
@@ -2047,13 +2090,17 @@ class Gui:
         for output_index, output_channel in enumerate(track.outputs):
             if output_channel.deleted:
                 continue
-            self.add_track_output(sender=None, app_data=None, user_data=("restore", track, output_channel))
+            if isinstance(output_channel, model.DmxOutputGroup):
+                self.add_track_output_group(sender=None, app_data=None, user_data=("restore", track, output_channel))
+            else:
+                self.add_track_output(sender=None, app_data=None, user_data=("restore", track, output_channel))
 
-    def add_track_output(self, sender, app_data, user_data):
+    def add_track_output(self, sender, app_data, user_data):  
         action = user_data[0]
         track = user_data[1]
         if action == "create":
-            success, output_channel = state.execute(f"create_output {track.id}")
+            address = user_data[2] if len(user_data) == 3   else 1
+            success, output_channel = state.execute(f"create_output {track.id} {address}")
             if not success:
                 return
         else: # restore
@@ -2062,7 +2109,7 @@ class Gui:
         output_table_tag = f"{get_output_configuration_window_tag(track)}.output_table"
         output_table_row_tag = f"{output_table_tag}.{output_channel.id}.gui.row"
         with dpg.table_row(parent=output_table_tag, tag=output_table_row_tag):
-            dpg.add_input_int(tag=f"{output_channel.id}.dmx_channel", width=75, default_value=output_channel.dmx_channel, callback=self.update_channel_attr, user_data=(output_channel, "dmx_channel"))
+            dpg.add_input_int(tag=f"{output_channel.id}.dmx_address", width=75, default_value=output_channel.dmx_address, callback=self.update_channel_attr, user_data=(output_channel, "dmx_address"))
             dpg.add_input_text(tag=f"{output_channel.id}.name", default_value=output_channel.name, callback=self.update_channel_attr, user_data=(output_channel, "name"), width=150)
             dpg.add_button(label="X", callback=self._delete_track_output, user_data=(track, output_channel))
 
@@ -2072,21 +2119,49 @@ class Gui:
                 continue
             self.add_output_node(clip, output_channel)
 
+    def add_track_output_group(self, sender, app_data, user_data):
+        action = user_data[0]
+        track = user_data[1]
+        starting_address = user_data[2]
+        channel_names = user_data[3]
+        if action == "create":
+            success, output_channel_group = state.execute(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
+            if not success:
+                return
+        else: # restore
+            output_channel_group = user_data[2]
+
+        def update_channel_group_address(sender, app_data, user_data):
+            output_channel_group = user_data
+            output_channel_group.update_starting_address(app_data)
+
+        def update_channel_group_name(sender, app_data, user_data):
+            output_channel_group = user_data
+            output_channel_group.update_name(app_data)
+            dpg.configure_item(get_node_tag(self._active_clip, output_channel_group), label=app_data)
+
+        output_table_tag = f"{get_output_configuration_window_tag(track)}.output_table"
+        output_table_row_tag = f"{output_table_tag}.{output_channel_group.id}.gui.row"
+        with dpg.table_row(parent=output_table_tag, tag=output_table_row_tag):
+            dpg.add_input_int(tag=f"{output_channel_group.id}.dmx_address", width=75, default_value=output_channel_group.dmx_address, callback=update_channel_group_address, user_data=output_channel_group)
+            dpg.add_input_text(tag=f"{output_channel_group.id}.name", default_value=output_channel_group.name, callback=update_channel_group_name, user_data=output_channel_group, width=150)
+            dpg.add_button(label="X", callback=self._delete_track_output_group, user_data=(track, output_channel_group))
+
+        # Add a Node to each clip's node editor
+        for clip in track.clips:
+            if clip is None:
+                continue
+            self.add_output_group_node(clip, output_channel_group)
+
     def add_fixture(self, sender, app_data, user_data):
         track = user_data[0]
         fixture = user_data[1]
         starting_address = fixture.address
 
         for output_channel in track.outputs:
-            starting_address = max(starting_address, output_channel.dmx_channel + 1)
+            starting_address = max(starting_address, output_channel.dmx_address + 1)
 
-        for ch, name in enumerate(fixture.channels):
-            self.add_track_output(None, None, ("create", track))
-            output_channel = track.outputs[-1]
-            self.update_channel_attr(None, starting_address + ch, (output_channel, "dmx_channel"))
-            self.update_channel_attr(None, name, (output_channel, "name"))
-            dpg.set_value(f"{output_channel.id}.dmx_channel", starting_address + ch)
-            dpg.set_value(f"{output_channel.id}.name", name)
+        self.add_track_output_group(None, None, ("create", track, starting_address, fixture.channels))
 
     ###
 
@@ -2155,6 +2230,26 @@ class Gui:
                 self.create_track_output_configuration_window(track, show=True)
             else:
                 RuntimeError(f"Failed to delete: {output_channel.id}")
+
+    def _delete_track_output_group(self, _, __, user_data):
+        with self.gui_lock:
+            track, output_channel_group = user_data
+            # Delete the entire window, since we will remake it later.
+            parent = get_output_configuration_window_tag(track)
+            dpg.delete_item(parent)
+
+            success = self.execute_wrapper(f"delete {output_channel_group.id}")
+            if success:
+                # Delete each Node from each clip's node editor
+                for clip_i, clip in enumerate(track.clips):
+                    if clip is None:
+                        continue
+                    self._delete_node_gui(get_node_tag(clip, output_channel_group), output_channel_group.id)
+
+                # Remake the window
+                self.create_track_output_configuration_window(track, show=True)
+            else:
+                RuntimeError(f"Failed to delete: {output_channel_group.id}")
              
     def delete_selected_nodes(self):
         node_editor_tag = get_node_editor_tag(self._active_clip)
@@ -2294,12 +2389,14 @@ class Gui:
                     src_channels.append(input_channel)
         return src_channels
 
-    def get_all_valid_track_output_channels(self):
+    def get_all_valid_track_output_channels(self, clip):
         output_channels = []
-        for track in self.state.tracks:
-            for output_channel in track.outputs:
-                if output_channel.deleted:
-                    continue
+        for output_channel in clip.outputs:
+            if output_channel.deleted:
+                continue
+            if isinstance(output_channel, model.DmxOutputGroup):
+                output_channels.extend(output_channel.outputs)
+            else:   
                 output_channels.append(output_channel)
         return output_channels
 
@@ -2325,7 +2422,10 @@ class Gui:
         for output_channel in clip.outputs:
             if output_channel.deleted:
                 continue
-            dst_channels.append(output_channel)
+            if isinstance(output_channel, model.DmxOutputGroup):
+                dst_channels.extend(output_channel.outputs)
+            else:   
+                dst_channels.append(output_channel)
         for node in clip.node_collection.nodes:
             if node.deleted:
                 continue
@@ -2344,7 +2444,7 @@ class Gui:
         if valid(self._active_clip):
             # This is only setting the GUI value, so we only need to update the active clip.
             for dst_channel in self.get_all_valid_dst_channels(self._active_clip):
-                if hasattr(dst_channel, "dmx_channel"):
+                if hasattr(dst_channel, "dmx_address"):
                     tag = get_output_node_value_tag(self._active_clip, dst_channel)
                 else:
                     tag = f"{dst_channel.id}.value"
@@ -2503,9 +2603,7 @@ class Gui:
         key = chr(key_n)
         #print(key_n)
         if key == " ":
-            self.state.playing = not self.state.playing
-            if self.state.playing:
-                self.state.play_time_start = time.time()
+            self.state.toggle_play()
         elif key_n in [8, 46] and self.node_editor_window_is_focused and self.ctrl:
             self.delete_selected_nodes()
         elif key_n in [120]:
@@ -2517,10 +2615,7 @@ class Gui:
             if self.ctrl:
                 self.copy_selected()
         elif key in ["O"]:
-            if self.ctrl and self.shift:
-                if self._active_track:
-                    self.add_track_output(None, None, ("create", self._active_track))
-            elif self.ctrl:
+            if self.ctrl:
                 self.open_menu_callback()
         elif key in ["I"]:
             if self.ctrl and self.shift:

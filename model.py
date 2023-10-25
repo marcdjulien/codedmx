@@ -264,9 +264,9 @@ class ClipInputChannel(Parameterized, Channel):
 
 
 class DmxOutput(Channel):
-    def __init__(self, dmx_channel):
-        super().__init__(direction="in", dtype="int", name=f"DMX CH. {dmx_channel}")
-        self.dmx_channel = dmx_channel
+    def __init__(self, dmx_address=1, name=""):
+        super().__init__(direction="in", dtype="int", name=name or f"DMX CH. {dmx_address}")
+        self.dmx_address = dmx_address
         self.history = [0] * 500
 
     def record(self):
@@ -283,12 +283,62 @@ class DmxOutput(Channel):
 
         data = []
 
-        data.append(f"execute create_output {track_ptr}")
+        data.append(f"execute create_output {track_ptr} {self.dmx_address}")
         if self.deleted:
             data.append(f"execute delete {output_ptr}")
         else:
             data.append(f"{output_ptr}.name:{repr(self.name)}")
-            data.append(f"{output_ptr}.dmx_channel:{repr(self.dmx_channel)}")
+
+        return data
+
+
+class DmxOutputGroup(Identifier):
+
+    def __init__(self, channel_names, dmx_address=1, name="Group"):
+        super().__init__()
+        self.name = name
+        self.dmx_address = dmx_address
+        self.outputs: DmxOutput = []
+        self.channel_names = channel_names
+        for i, channel_name in enumerate(channel_names):
+            output_channel = DmxOutput()
+            self.outputs.append(output_channel)
+        self.update_starting_address(dmx_address)
+        self.update_name(name)
+
+    def record(self):
+        for output in self.outputs:
+            output.record()
+
+    def update_starting_address(self, address):
+        for i, output_channel in enumerate(self.outputs):
+            output_channel.dmx_address = i + address
+
+    def update_name(self, name):
+        for i, output_channel in enumerate(self.outputs):
+            output_channel.name = f"{name}.{self.channel_names[i]}"
+
+    # TODO: Complete
+    def serialize(self, clip_ptr, i, id_to_ptr):
+        if i is None:
+            node_ptr = f"{clip_ptr}.node[{{node_i}}]"
+        else:
+            node_ptr = f"{clip_ptr}.node[{i}]"
+
+        data = []
+        node_type = "none" if self.deleted else self.type
+        args = "," if self.deleted else (self.args or ",")
+        data.append(f"execute create_node {clip_ptr} {node_type} {args}")
+        if not self.deleted:
+            data.append(f"{node_ptr}.name:{repr(self.name)}")
+            data.extend(self.serialize_parameters(node_ptr))
+            for input_i, input_channel in enumerate(self.inputs):
+                input_ptr = f"{node_ptr}.in[{input_i}]"
+                id_to_ptr[input_channel.id] = input_ptr
+                data.append(f"execute update_channel_value {input_ptr} {input_channel.get()}")
+            for output_i, output_channel in enumerate(self.outputs):
+                output_ptr = f"{node_ptr}.out[{output_i}]"
+                id_to_ptr[output_channel.id] = output_ptr
 
         return data
 
@@ -486,7 +536,7 @@ class FunctionCustomNode(FunctionNode):
             return super().update_parameter(index, value)
 
 
-    # Update?
+    # TODO: Update?
     def serialize(self, clip_ptr, i, id_to_ptr):
         if i is None:
             node_ptr = f"{clip_ptr}.node[{{node_i}}]"
@@ -550,6 +600,7 @@ class FunctionBinaryOperator(FunctionNode):
             return True, None
         else:
             return super().update_parameter(index, value)
+            
 
 class FunctionScale(FunctionNode):
     nice_title = "Scale"
@@ -662,6 +713,32 @@ class FunctionPassthrough(FunctionNode):
 
     def transform(self):
         self.outputs[0].set(self.inputs[0].get())
+
+
+class FunctionTimeSeconds(FunctionNode):
+    nice_title = "Seconds"
+
+    def __init__(self, time_func, name="Seconds"):
+        super().__init__(name)
+        self.outputs.append(Channel("out", dtype="float", name="s"))
+        self.type = "time_s"
+        self.time_func = time_func
+
+    def transform(self):
+        self.outputs[0].set(self.time_func())
+
+
+class FunctionTimeBeats(FunctionNode):
+    nice_title = "Beats"
+
+    def __init__(self, time_func, name="Beats"):
+        super().__init__(name)
+        self.outputs.append(Channel("out", dtype="float", name="beat"))
+        self.type = "time_beat"
+        self.time_func = time_func
+
+    def transform(self):
+        self.outputs[0].set(self.time_func())
 
 
 class FunctionChanging(FunctionNode):
@@ -1032,8 +1109,8 @@ class NodeCollection:
             try:
                 node.transform()
             except Exception as e:
-                print(e, node.name)
-                pass
+                print(f"{e} in {node.name}")
+
     def serialize(self, clip_ptr, id_to_ptr):
         data = []
         for node_i, node in enumerate(self.nodes):
@@ -1270,11 +1347,15 @@ class Track(Identifier):
                 continue
             output.record()
 
-    def create_output(self):
-        n = len(self.outputs)
-        new_output = DmxOutput(len(self.outputs) + 1)
+    def create_output(self, address):
+        new_output = DmxOutput(address)
         self.outputs.append(new_output)
         return new_output
+
+    def create_output_group(self, address, channel_names):
+        new_output_group = DmxOutputGroup(channel_names, address)
+        self.outputs.append(new_output_group)
+        return new_output_group
 
     def __delitem__(self, key):
         clips[key] = None
@@ -1330,7 +1411,7 @@ class EthernetDmxOutput(IO):
         for output_channel in outputs:
             if output_channel.deleted:
                 continue
-            self.dmx_frame[output_channel.dmx_channel-1] = min(255, max(0, int(round(output_channel.get()))))
+            self.dmx_frame[output_channel.dmx_address-1] = min(255, max(0, int(round(output_channel.get()))))
 
         try:
             self.dmx_connection.set_channels(1, self.dmx_frame)
@@ -1401,6 +1482,7 @@ class MidiDevice(IO):
             self.port.reset()
 
     def update(self, _):
+        # TODO: Make Customizable
         white = 3
         pink = 53
         orange = 60
@@ -1505,10 +1587,17 @@ class ProgramState(Identifier):
 
         self.playing = False
         self.tempo = 120.0
-        self.play_time_start = 0
-        self.beats_since_start = 0
-
+        self.play_time_start_s = 0
+        self.time_since_start_beat = 0
+        self.time_since_start_s = 0
         self.all_track_outputs = []
+
+    def toggle_play(self):
+        if self.playing:
+            self.playing = False
+        else:
+            self.playing = True
+            self.play_time_start_s = time.time()
 
     def update(self):
         global IO_OUTPUTS
@@ -1517,12 +1606,12 @@ class ProgramState(Identifier):
 
         # Update timing
         if self.playing:
-            time_since_start_s = time.time() - self.play_time_start
-            self.beats_since_start = time_since_start_s * (1.0/60.0) * self.tempo
+            self.time_since_start_s = time.time() - self.play_time_start_s
+            self.time_since_start_beat = self.time_since_start_s * (1.0/60.0) * self.tempo
 
             # Update values
             for track in self.tracks:
-                track.update(self.beats_since_start)
+                track.update(self.time_since_start_beat)
 
             # Update DMX outputs
             for io_output in IO_OUTPUTS:
@@ -1577,9 +1666,19 @@ class ProgramState(Identifier):
         elif cmd == "create_output":
             track_id = toks[1]
             track = self.get_obj(track_id)
-            new_output_channel = track.create_output()
+            address = int(toks[2])
+            new_output_channel = track.create_output(address)
             self.all_track_outputs.append(new_output_channel)
             return True, new_output_channel
+
+        elif cmd == "create_output_group":
+            track_id = toks[1]
+            track = self.get_obj(track_id)
+            address = int(toks[2])
+            channel_names = full_command.split(" ", 3)[-1].split(',')
+            new_output_group = track.create_output_group(address, channel_names)
+            self.all_track_outputs.append(new_output_group)
+            return True, new_output_group
 
         elif cmd == "create_link":
             clip_id = toks[1]
@@ -1627,6 +1726,12 @@ class ProgramState(Identifier):
             elif type_id == "separator":
                 n = int(args)
                 node = clip.node_collection.add_node(FunctionSeparator, n)
+            elif type_id == "time_s":
+                time_func = lambda: self.time_since_start_s
+                node = clip.node_collection.add_node(FunctionTimeSeconds, time_func)
+            elif type_id == "time_beat":
+                time_func = lambda: self.time_since_start_beat
+                node = clip.node_collection.add_node(FunctionTimeBeats, time_func)
             elif type_id == "random":
                 node = clip.node_collection.add_node(FunctionRandom, None)
             elif type_id == "passthrough":
@@ -1966,12 +2071,11 @@ class ProgramState(Identifier):
             for output_i, output_channel in enumerate(track.outputs):
                 output_ptr = f"{track_ptr}.out[{output_i}]"
                 id_to_ptr[output_channel.id] = output_ptr
-                save(f"execute create_output {track_ptr}")
+                save(f"execute create_output {track_ptr} {output_channel.dmx_address}")
                 if output_channel.deleted:
                     save(f"execute delete {output_ptr}")
                 else:
                     save(f"{output_ptr}.name:{repr(output_channel.name)}")
-                    save(f"{output_ptr}.dmx_channel:{repr(output_channel.dmx_channel)}")
 
             for clip_i, clip in enumerate(track.clips):
                 if clip is None:
