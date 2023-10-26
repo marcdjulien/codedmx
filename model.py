@@ -12,6 +12,7 @@ from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_server
 import threading 
 import mido
+import json
 
 # For Custom Fuction Nodes
 import colorsys
@@ -73,6 +74,14 @@ class Identifier:
     def delete(self):
         self.deleted = True
 
+    def serialize(self):
+        return {"id": self.id}
+
+    def deserialize(self, data):
+        global UUID_DATABASE
+        self.id = data["id"]
+        UUID_DATABASE[self.id] = self
+
 
 cast = {
     "bool": int,
@@ -98,6 +107,18 @@ class Channel(Identifier):
     def set(self, value):
         self.value = value
 
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "value": self.value,
+            "size": self.size,
+            "direction": self.direction,
+            "dtype": self.dtype,
+            "name": self.name,
+        })
+        return data
+
+    # No deserialize, user should create a new objects based on info
 
 class Parameter(Identifier):
     def __init__(self, name, value=None):
@@ -108,6 +129,15 @@ class Parameter(Identifier):
     def __str__(self):
         return f"Parameter({self.name}, {self.value})"
 
+    def serialize(self):
+        return {
+            "name": self.name,
+            "value": self.value,
+        }
+
+    @staticmethod
+    def deserialize(data):
+        return Parameter(data["name"], data["value"])
 
 class Parameterized:
     def __init__(self, *args, **kwargs):
@@ -137,11 +167,18 @@ class Parameterized:
         if parameter is not None:
             return parameter.id
 
-    def serialize_parameters(self, ptr):
-        data = []
-        for param_i, parameter in enumerate(self.parameters):
-            data.append(f"execute update_parameter {ptr} {param_i} {parameter.value}")
+    def serialize(self):
+        data = super().serialize()
+        data.update({"parameters": []})
+        for parameter in self.parameters:
+            data["parameters"].append(parameter.serialize())
         return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        parameters_data = data["parameters"]
+        for parameter_data in parameters_data:
+            self.parameters.append(Parameter.deserialize(parameter_data))
 
 
 class ClipInputChannel(Parameterized, Channel):
@@ -239,29 +276,39 @@ class ClipInputChannel(Parameterized, Channel):
         else:
             return super().update_parameter(index, value)
 
-    def serialize(self, clip_ptr, i, id_to_ptr=None):
-        if i is None:
-            input_ptr = f"{clip_ptr}.in[{{input_i}}]"
-        else:
-            input_ptr = f"{clip_ptr}.in[{i}]"
-            if id_to_ptr is not None:
-                id_to_ptr[self.id] = input_ptr
-
-        data = []
-        dtype = "none" if self.deleted else self.dtype
-        data.append(f"execute create_input {clip_ptr} {self.input_type}")
-
-        if self.deleted:
-            data.append(f"execute delete {input_ptr}")
-        else:
-            data.append(f"execute update_channel_value {input_ptr} {self.get()}")
-            data.append(f"{input_ptr}.name:{repr(self.name)}")
-            data.append(f"{input_ptr}.mode:{repr(self.mode)}")
-            data.extend(self.serialize_parameters(input_ptr))
-            for auto_i, automation in enumerate(self.automations):
-                data.extend(automation.serialize(input_ptr, auto_i))
+    def serialize(self):
+        data = super().serialize()
+        
+        data.update({
+            "input_type": self.input_type,
+            "speed": self.speed,
+            "active_automation": self.active_automation.id if self.active_automation else None,
+            "active_automation_i": self.active_automation_i,
+            "mode": self.mode,
+            "ext_value": self.ext_value,
+            "automations": []
+        })
+        
+        for automation in self.automations:
+            data["automations"].append(automation.serialize())
+        
         return data
 
+    def deserialize(self, data):
+        super().deserialize(data)
+        
+        for automation_data in data["automations"]:
+            automation = ChannelAutomation(
+                automation_data["dtype"],
+                automation_data["name"],
+                self.get_parameter("min").value,
+                self.get_parameter("max").value,
+                clear=True,
+            )
+            automation.deserialize(automation_data)
+            self.automations.append(automation)
+        self.set_active_automation(UUID_DATABASE[data["active_automation"]])
+        
 
 class DmxOutput(Channel):
     def __init__(self, dmx_address=1, name=""):
@@ -273,23 +320,16 @@ class DmxOutput(Channel):
         self.history.pop(0)
         self.history.append(self.value)
 
-    def serialize(self, track_ptr, i, id_to_ptr):
-        if i is None:
-            output_ptr = f"{track_ptr}.out[{{output_i}}]"
-        else:
-            output_ptr = f"{track_ptr}.out[{i}]"
-            if id_to_ptr is not None:
-                id_to_ptr[self.id] = output_ptr
-
-        data = []
-
-        data.append(f"execute create_output {track_ptr} {self.dmx_address}")
-        if self.deleted:
-            data.append(f"execute delete {output_ptr}")
-        else:
-            data.append(f"{output_ptr}.name:{repr(self.name)}")
-
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "dmx_address": self.dmx_address,
+        })
         return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.dmx_address = data["dmx_address"]
 
 
 class DmxOutputGroup(Identifier):
@@ -318,23 +358,26 @@ class DmxOutputGroup(Identifier):
         for i, output_channel in enumerate(self.outputs):
             output_channel.name = f"{name}.{self.channel_names[i]}"
 
-    def serialize(self, track_ptr, i, id_to_ptr):
-        if i is None:
-            output_ptr = f"{track_ptr}.group[{{output_i}}]"
-        else:
-            output_ptr = f"{track_ptr}.group[{i}]"
-            if id_to_ptr is not None:
-                id_to_ptr[self.id] = output_ptr
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "dmx_address": self.dmx_address,
+            "channel_names": self.channel_names,
+            "outputs": [],
+        })
 
-        data = []
-
-        data.append(f"execute create_output_group {track_ptr} {self.dmx_address}", {','.join(self.channel_names)})
-        if self.deleted:
-            data.append(f"execute delete {output_ptr}")
-        else:
-            data.append(f"{output_ptr}.name:{repr(self.name)}")
-
+        for output_channel in self.outputs:
+            data["outputs"].append(output_channel.serialize())
         return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        self.dmx_address = data["dmx_address"]
+        self.channel_names = data["channel_names"]
+        for i, output_data in enumerate(data["outputs"]):
+            self.outputs[i].deserialize(output_data)
 
 
 class OscInput(ClipInputChannel):
@@ -390,6 +433,14 @@ class ChannelLink(Identifier):
     def update(self):
         self.dst_channel.set(self.src_channel.get())
 
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "src_channel": self.src_channel.id,
+            "dst_channel": self.dst_channel.id,
+        })
+        return data
+
 
 class FunctionNode(Parameterized, Identifier):
 
@@ -407,28 +458,34 @@ class FunctionNode(Parameterized, Identifier):
     def outputs(self):
         return self.outputs
 
-    def serialize(self, clip_ptr, i, id_to_ptr):
-        if i is None:
-            node_ptr = f"{clip_ptr}.node[{{node_i}}]"
-        else:
-            node_ptr = f"{clip_ptr}.node[{i}]"
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "type": self.type,
+            "args": self.args,
+            "inputs": [],
+            "outputs": [],
+        })
 
-        data = []
-        node_type = "none" if self.deleted else self.type
-        args = "," if self.deleted else (self.args or ",")
-        data.append(f"execute create_node {clip_ptr} {node_type} {args}")
-        if not self.deleted:
-            data.append(f"{node_ptr}.name:{repr(self.name)}")
-            data.extend(self.serialize_parameters(node_ptr))
-            for input_i, input_channel in enumerate(self.inputs):
-                input_ptr = f"{node_ptr}.in[{input_i}]"
-                id_to_ptr[input_channel.id] = input_ptr
-                data.append(f"execute update_channel_value {input_ptr} {input_channel.get()}")
-            for output_i, output_channel in enumerate(self.outputs):
-                output_ptr = f"{node_ptr}.out[{output_i}]"
-                id_to_ptr[output_channel.id] = output_ptr
+        for input_channel in self.inputs:
+            data["inputs"].append(input_channel.serialize())
 
+        for output_channel in self.outputs:
+            data["outputs"].append(output_channel.serialize())
+        
         return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        self.type = data["type"]
+        self.args = data["args"]
+        for input_data in data["inputs"]:
+            self.inputs.append(Channel.deserialize(input_data))
+        for output_data in data["outputs"]:
+            self.outputs.append(Channel.deserialize(output_data))
+
 
 class FunctionDeleted(FunctionNode):
     nice_title = "Deleted"
@@ -530,30 +587,8 @@ class FunctionCustomNode(FunctionNode):
             return super().update_parameter(index, value)
 
 
-    # TODO: Update?
-    def serialize(self, clip_ptr, i, id_to_ptr):
-        if i is None:
-            node_ptr = f"{clip_ptr}.node[{{node_i}}]"
-        else:
-            node_ptr = f"{clip_ptr}.node[{i}]"
-
-        data = []
-        node_type = "none" if self.deleted else self.type
-        args = "," if self.deleted else (self.args or ",")
-        data.append(f"execute create_node {clip_ptr} {node_type} {args}")
-        if not self.deleted:
-            data.append(f"{node_ptr}.name:{repr(self.name)}")
-            for param_i, parameter in enumerate(self.parameters):
-                data.append(f"execute update_parameter {node_ptr} {param_i} {parameter.value}")
-            for input_i, input_channel in enumerate(self.inputs):
-                input_ptr = f"{node_ptr}.in[{input_i}]"
-                id_to_ptr[input_channel.id] = input_ptr
-                data.append(f"execute update_channel_value {input_ptr} {input_channel.get()}")
-            for output_i, output_channel in enumerate(self.outputs):
-                output_ptr = f"{node_ptr}.out[{output_i}]"
-                id_to_ptr[output_channel.id] = output_ptr
-
-        return data
+    def serialize(self):
+        return {}
 
 
 class FunctionBinaryOperator(FunctionNode):
@@ -645,13 +680,13 @@ class FunctionDemux(FunctionNode):
 
     def __init__(self, n, name="Demux"):
         super().__init__(name)
-        self.n = n
+        self.n = int(n)
         self.parameters = []
         self.inputs = [
             Channel("in", 0, dtype="int", name=f"sel"),
             Channel("in", dtype="any", name=f"val")
         ]
-        for i in range(n):
+        for i in range(self.n):
             self.outputs.append(Channel("out", dtype="any", name=f"{i+1}"))
 
         self.type = "demux"
@@ -678,11 +713,11 @@ class FunctionMultiplexer(FunctionNode):
 
     def __init__(self, n, name="Multiplexer"):
         super().__init__(name)
-        self.n = n
+        self.n = int(n)
         self.inputs = [
             Channel("in", 1, dtype="int", name=f"sel")
         ]
-        for i in range(n):
+        for i in range(self.n):
             self.inputs.append(Channel("in", dtype="any", name=f"{i+1}"))
 
         self.outputs.append(Channel("out", dtype="any", name=f"out"))
@@ -788,8 +823,8 @@ class FunctionLastChanged(FunctionNode):
 
     def __init__(self, n, name="LastChanged"):
         super().__init__(name)
-        self.n = n
-        for i in range(n):
+        self.n = int(n)
+        for i in range(self.n):
             self.inputs.append(Channel("in", 0, dtype="any", name=f"{i+1}"))
 
         self.outputs.append(Channel("out", dtype="int", name=f"out{n}"))
@@ -820,8 +855,8 @@ class FunctionAggregator(FunctionNode):
 
     def __init__(self, n, name="Aggregator"):
         super().__init__(name)
-        self.n = n
-        for i in range(n):
+        self.n = int(n)
+        for i in range(self.n):
             self.inputs.append(Channel("in", 0, dtype="any", name=f"{i+1}"))
 
         self.outputs.append(Channel("out", dtype="any", size=n, name=f"out{n}"))
@@ -838,10 +873,10 @@ class FunctionSeparator(FunctionNode):
 
     def __init__(self, n, name="Separator"):
         super().__init__(name)
-        self.n = n
+        self.n = int(n)
         self.inputs.append(Channel("in", dtype="any", size=n, name=f"in{n}"))
 
-        for i in range(n):
+        for i in range(self.n):
             self.outputs.append(Channel("out", dtype="any", name=f"out{n}"))
         self.type = "separator"
         self.args = n
@@ -1002,7 +1037,7 @@ class FunctionPixelMover1(FunctionNode):
             for n in range(8)
             for rgb in "rgb"
         ])
-        self.type = "canvas1x8"
+        self.type = "pixelmover1"
 
         self._canvas = [0] * 24
 
@@ -1032,6 +1067,26 @@ class FunctionPixelMover1(FunctionNode):
         for i, value in enumerate(canvas):
             self.outputs[i].set(value)
 
+FUNCTION_TYPES = {
+    "custom": FunctionCustomNode,
+    "binary_operator": FunctionBinaryOperator,
+    "scale": FunctionScale,
+    "demux": FunctionDemux,
+    "multiplexer": FunctionMultiplexer,
+    "passthrough": FunctionPassthrough,
+    "time_s": FunctionTimeSeconds,
+    "time_beat": FunctionTimeBeats,
+    "changing": FunctionChanging,
+    "toggle_on_change": FunctionToggleOnChange,
+    "last_changed": FunctionLastChanged,
+    "aggregator": FunctionAggregator,
+    "separator": FunctionSeparator,
+    "random": FunctionRandom,
+    "sample": FunctionSample,
+    "buffer": FunctionBuffer,
+    "canvas1x8": FunctionCanvas1x8,
+    "pixelmover1": FunctionPixelMover1,
+}
 
 class NodeCollection:
     """Collection of nodes and their the a set of inputs and outputs"""
@@ -1104,20 +1159,37 @@ class NodeCollection:
             except Exception as e:
                 print(f"{e} in {node.name}")
 
-    def serialize(self, clip_ptr, id_to_ptr):
-        data = []
-        for node_i, node in enumerate(self.nodes):
-            if node is None:
-                continue
-            data.extend(node.serialize(clip_ptr, node_i, id_to_ptr))
+    def serialize(self):
+        data = {
+            "nodes": [],
+            "links": [],
+        }
+        for node in self.nodes:
+            data["nodes"].append(node.serialize())
 
         for link in self.links:
-            if link.deleted:
-                continue
-            data.append(f"execute create_link {clip_ptr} {id_to_ptr[link.src_channel.id]} {id_to_ptr[link.dst_channel.id]}")
+            data["links"].append(link.serialize())
 
         return data
 
+    def deserialize(self, data):
+        for node_data in data["nodes"]:
+            cls = FUNCTION_TYPES[node_data["type"]]
+            if node_data["args"] is not None:
+                node = cls(args=node_data["args"], name=node_data["name"])
+            else:
+                node = cls(name=node_data["name"])
+            node.deserialize(node_data)
+
+            self.nodes.append(node)
+
+        for link_data in data["links"]:
+            src_channel = UUID_DATABASE[link_data["src_channel"]]
+            dst_channel = UUID_DATABASE[link_data["dst_channel"]]
+            link = ChannelLink(src_channel, dst_channel)
+            link.deserialize(link_data)
+            self.links.append(link)
+        
 
 class ChannelAutomation(Identifier):
     default_interpolation_type = {
@@ -1222,33 +1294,31 @@ class ChannelAutomation(Identifier):
                     self.remove_point(i, force=True)
             self.add_point((new_length, self.values_y[self.max_x_index()]))
 
-    def serialize(self, input_ptr, i=None):
-        if i is None:
-            auto_ptr = f"{input_ptr}.automation[{{auto_i}}]"
-        else:
-            auto_ptr = f"{input_ptr}.automation[{i}]"
-
-        data = []
-        data.append(f"execute add_automation {input_ptr} clear")
-        if self.deleted:
-            data.append(f"execute delete {auto_ptr}")
-            return data
-        data.append(f"{auto_ptr}.length:{repr(self.length)}")
-        data.append(f"{auto_ptr}.name:{repr(self.name)}")
-        data.append(f"{auto_ptr}.interpolation:{repr(self.interpolation)}")
-        for point_i in range(len(self.values_x)):
-            x, y = self.values_x[point_i], self.values_y[point_i]
-            if x is None:
-                continue
-            data.append(f"execute add_automation_point {auto_ptr} {x},{y}")
-
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "length": self.length,
+            "values_x": self.values_x,
+            "values_y": self.values_y,
+            "dtype": self.dtype,
+            "name": self.name,
+            "interpolation": self.interpolation,
+        })
         return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.values_x = data["values_x"]
+        self.values_y = data["values_y"]
+        self.dtype = data["dtype"]
+        self.name = data["name"]
+        self.set_interpolation(data["interpolation"])
+        self.set_length(data["length"])
 
 
 class Clip(Identifier):
     def __init__(self, outputs):
         super().__init__()
-
         self.name = ""
 
         self.inputs = []
@@ -1297,30 +1367,53 @@ class Clip(Identifier):
         else:
             self.start()
 
-    def serialize(self, track_ptr, i=None, id_to_ptr=None):
-        if i is None:
-            clip_ptr = f"{track_ptr}.clip[{{clip_i}}]"
-        else:
-            clip_ptr = f"{track_ptr}.clip[{i}]"
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "speed": self.speed,
+            "inputs": [],
+            "outputs": [],
+            "node_collection": self.node_collection.serialize(),
+        })
 
-        data = []
-        data.append(f"execute new_clip {track_ptr},{i}")
-        data.append(f"{clip_ptr}.name:{repr(self.name)}")
-        data.append(f"{clip_ptr}.speed:{repr(self.speed)}")
-        data.append(f"{clip_ptr}.playing:{repr(self.playing)}")
-
-        for input_i, input_channel in enumerate(self.inputs):
-            data.extend(input_channel.serialize(clip_ptr, input_i, id_to_ptr))
-
-        # Outputs are serialized at the Track level, but we still need
-        # to maintain the Clips individual output pointer mapping.
-        # Populate id_to_ptr by calling serialize, but don't save the data.
-        for output_i, output_channel in enumerate(self.outputs):
-            output_channel.serialize(clip_ptr, output_i, id_to_ptr)
-
-        data.extend(self.node_collection.serialize(clip_ptr, id_to_ptr))
-
+        for input_channel in self.inputs:
+            data["inputs"].append(input_channel.serialize())
+        
+        for output_channel in self.outputs:
+            data["outputs"].append(output_channel.serialize())
+            
         return data
+
+    @classmethod
+    def deserialize(cls, data):
+        if data is None:
+            return None
+
+        outputs = [UUID_DATABASE[output_data["id"]] for output_data in data["outputs"]]
+        clip = Clip(outputs)
+        clip.speed = data["speed"]
+
+        for input_data in data["inputs"]:
+            if input_data["input_type"] in cast.keys():
+                channel = ClipInputChannel(
+                    direction=input_data["direction"],
+                    value=input_data["value"],
+                    dtype=input_data["dtype"],
+                    name=input_data["name"],
+                )
+                channel.deserialize(input_data)
+            elif input_data["input_type"].startswith("osc_input_"):
+                channel = OscInput(input_data["dtype"])
+                channel.deserialize(input_data)
+            elif input_data["input_type"] == "midi":
+                channel = MidiInput()
+                channel.deserialize(input_data)
+            clip.inputs.append(channel)
+        
+        clip.node_collection.deserialize(data["node_collection"])
+
+        return clip
 
 
 class Track(Identifier):
@@ -1362,21 +1455,39 @@ class Track(Identifier):
     def __len__(self):
         return len(self.clips)
 
-    def serialize(self, i=None):
-        if i is None:
-            track_ptr = "*track[{track_i}]"
-        else:
-            track_ptr = f"*track[{i}]"
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "clips": [],
+            "outputs": [],
+        })
 
-        id_to_ptr = {}
-        data = []
-        data.append(f"{track_ptr}.name:{repr(self.name)}")
-        for output_i, output_channel in enumerate(self.outputs):
-            data.extend(output_channel.serialize(track_ptr, output_i, id_to_ptr))
-        for clip_i, clip in enumerate(self.clips):
-            if clip is not None:
-                data.extend(clip.serialize(track_ptr, clip_i, id_to_ptr))
+        for clip in self.clips:
+            data["clips"].append(clip.serialize() if clip else None)
+
+        for output in self.outputs:
+            output_type = "single" if isinstance(output, DmxOutput) else "group"
+            data["outputs"].append((output_type, output.serialize()))
+
         return data
+
+    def deserialize(self, track_data):
+        super().deserialize(track_data)
+        self.name = track_data["name"]
+
+        for output_data in track_data["outputs"]:
+            output_type, data = output_data
+            if output_type == "single":
+                output = DmxOutput()
+            elif output_type == "group":
+                output = DmxOutputGroup(data["channel_names"])
+            output.deserialize(data)
+            self.outputs.append(output)
+
+
+        for i, clip_data in enumerate(track_data["clips"]):
+            self.clips[i] = (Clip.deserialize(clip_data))
 
 
 class IO:
@@ -1571,12 +1682,9 @@ class ProgramState(Identifier):
         self.project_name = "Untitled"
         self.project_filepath = None
         self.tracks = []
-        self.restoring = False
 
         for i in range(N_TRACKS):
             self.tracks.append(Track(f"Track {i}"))
-
-        self._active_clip = None
 
         self.playing = False
         self.tempo = 120.0
@@ -1611,9 +1719,26 @@ class ProgramState(Identifier):
                 if io_output is not None:
                     io_output.update(self.all_track_outputs)
 
-    def stop_io(self):
-        pass
+    def serialize(self):
+        data = {
+            "tempo": self.tempo,
+            "project_name": self.project_name,
+            "project_filepath": self.project_filepath,
+            "tracks": []
+        }
 
+        for track in self.tracks:
+            data["tracks"].append(track.serialize())
+
+        return data
+
+    def deserialize(self, data):
+        self.tempo = data["tempo"]
+        self.project_name = data["project_name"]
+        self.project_filepath = data["project_filepath"]
+
+        for i, track_data in enumerate(data["tracks"]):
+            self.tracks[i].deserialize(track_data)
 
     def execute(self, full_command):
         global IO_OUTPUTS
@@ -1697,55 +1822,14 @@ class ProgramState(Identifier):
             toks = full_command.split(" ", 3)
             clip_id = toks[1]
             type_id = toks[2]
-            args = toks[3]
+            args = toks[3] or None
 
             clip = self.get_obj(clip_id)
 
             if type_id == "none":
                 node = clip.node_collection.add_node(None, None)
-            elif type_id == "binary_operator":
-                node = clip.node_collection.add_node(FunctionBinaryOperator, None)
-            elif type_id == "scale":
-                node = clip.node_collection.add_node(FunctionScale, None)
-            elif type_id == "demux":
-                n = int(args)
-                node = clip.node_collection.add_node(FunctionDemux, n)
-            elif type_id == "multiplexer":
-                n = int(args)
-                node = clip.node_collection.add_node(FunctionMultiplexer, n)
-            elif type_id == "aggregator":
-                n = int(args)
-                node = clip.node_collection.add_node(FunctionAggregator, n)
-            elif type_id == "separator":
-                n = int(args)
-                node = clip.node_collection.add_node(FunctionSeparator, n)
-            elif type_id == "time_s":
-                time_func = lambda: self.time_since_start_s
-                node = clip.node_collection.add_node(FunctionTimeSeconds, time_func)
-            elif type_id == "time_beat":
-                time_func = lambda: self.time_since_start_beat
-                node = clip.node_collection.add_node(FunctionTimeBeats, time_func)
-            elif type_id == "random":
-                node = clip.node_collection.add_node(FunctionRandom, None)
-            elif type_id == "passthrough":
-                node = clip.node_collection.add_node(FunctionPassthrough, None)
-            elif type_id == "changing":
-                node = clip.node_collection.add_node(FunctionChanging, None)
-            elif type_id == "toggle_on_change":
-                node = clip.node_collection.add_node(FunctionToggleOnChange, None)
-            elif type_id == "last_changed":
-                n = int(args)
-                node = clip.node_collection.add_node(FunctionLastChanged, n)
-            elif type_id == "sample":
-                node = clip.node_collection.add_node(FunctionSample, None)
-            elif type_id == "buffer":
-                node = clip.node_collection.add_node(FunctionBuffer, None)
-            elif type_id == "canvas1x8":
-                node = clip.node_collection.add_node(FunctionCanvas1x8, None)
-            elif type_id == "pixelmover1":
-                node = clip.node_collection.add_node(FunctionPixelMover1, None)
-            elif type_id == "custom":
-                node = clip.node_collection.add_node(FunctionCustomNode, args)
+            else:
+                node = clip.node_collection.add_node(FUNCTION_TYPES[type_id], args)
             return True, node
 
         elif cmd == "delete":
@@ -2024,57 +2108,6 @@ class ProgramState(Identifier):
             clip_i = int(match.groups()[1])
             return self.tracks[track_i][clip_i]
         raise RuntimeError(f"Failed to find clip for {clip_key}")
-
-    def deserialize(self, f):
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            print(f">>> {line}")
-            toks = line.strip().split(" ", 1)
-            if toks[0] == "execute":
-                self.execute(" ".join(toks[1::]))
-            else:
-                toks = line.split(":", 1)
-                obj_id, attr_name = toks[0].rsplit(".", 1)
-                value = toks[1]
-                obj = self.get_obj(obj_id)
-                setattr(obj, attr_name, eval(value))
-
-    def dump_state(self, f):
-        print("# Serialize")
-        for track_i, track in enumerate(self.tracks):
-            print(track.serialize(i=track_i))
-        print("# End Serialize")
-
-        def save(line):
-            print(line)
-            f.write(line + "\n")
-
-        for attr in self._attrs_to_dump:
-            save(f"*state.{attr}:{repr(getattr(self, attr))}")
-
-        # Clips
-        for track_i, track in enumerate(self.tracks):
-            # Keep track of ID's to pointers
-            id_to_ptr = {}
-            track_ptr = f"*track[{track_i}]"
-            save(f"{track_ptr}.name:{repr(track.name)}")
-
-            for output_i, output_channel in enumerate(track.outputs):
-                output_ptr = f"{track_ptr}.out[{output_i}]"
-                id_to_ptr[output_channel.id] = output_ptr
-                save(f"execute create_output {track_ptr} {output_channel.dmx_address}")
-                if output_channel.deleted:
-                    save(f"execute delete {output_ptr}")
-                else:
-                    save(f"{output_ptr}.name:{repr(output_channel.name)}")
-
-            for clip_i, clip in enumerate(track.clips):
-                if clip is None:
-                    continue
-                for data in clip.serialize(track_ptr, clip_i, id_to_ptr):
-                    save(data)
 
 
 IO_TYPES = {

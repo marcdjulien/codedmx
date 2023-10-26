@@ -11,7 +11,7 @@ import numpy as np
 import os
 import mido
 from collections import defaultdict
-
+import json
 from cProfile import Profile
 from pstats import SortKey, Stats
 
@@ -705,7 +705,6 @@ class Gui:
 
         window_tag = get_node_window_tag(self._active_clip)
         cur_pos = tuple(dpg.get_item_pos(window_tag))
-        print(cur_pos)
         if cur_pos == TOP_LEFT:
             dpg.configure_item(window_tag, pos=self._old_node_editor_pos)
             dpg.configure_item(window_tag, height=self._old_node_editor_height)
@@ -736,13 +735,13 @@ class Gui:
                         label=i, user_data=("create", ("aggregator", i, clip), right_click_menu), callback=self.add_function_node
                     )
             dpg.add_menu_item(
-                label="Binary Operator", user_data=("create", ("binary_operator", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Binary Operator", user_data=("create", ("binary_operator", None, clip), right_click_menu), callback=self.add_function_node
             )
             dpg.add_menu_item(
-                label="Buffer", user_data=("create", ("buffer", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Buffer", user_data=("create", ("buffer", None, clip), right_click_menu), callback=self.add_function_node
             )   
             dpg.add_menu_item(
-                label="Changing", user_data=("create", ("changing", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Changing", user_data=("create", ("changing", None, clip), right_click_menu), callback=self.add_function_node
             )   
             with dpg.menu(label="Demux"):
                 for i in range(2, 33):
@@ -760,16 +759,16 @@ class Gui:
                         label=i, user_data=("create", ("multiplexer", i, clip), right_click_menu), callback=self.add_function_node
                     )
             dpg.add_menu_item(
-                label="Passthrough", user_data=("create", ("passthrough", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Passthrough", user_data=("create", ("passthrough", None, clip), right_click_menu), callback=self.add_function_node
             )   
             dpg.add_menu_item(
-                label="Random", user_data=("create", ("random", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Random", user_data=("create", ("random", None, clip), right_click_menu), callback=self.add_function_node
             )           
             dpg.add_menu_item(
-                label="Scale", user_data=("create", ("scale", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Scale", user_data=("create", ("scale", None, clip), right_click_menu), callback=self.add_function_node
             )     
             dpg.add_menu_item(
-                label="Sample", user_data=("create", ("sample", ",", clip), right_click_menu), callback=self.add_function_node
+                label="Sample", user_data=("create", ("sample", None, clip), right_click_menu), callback=self.add_function_node
             ) 
             with dpg.menu(label="Separator"):
                 for i in range(2, 13):
@@ -778,17 +777,17 @@ class Gui:
                     )
             with dpg.menu(label="Time"):
                 dpg.add_menu_item(
-                    label="Beat", user_data=("create", ("time_beat", ",", clip), right_click_menu), callback=self.add_function_node
+                    label="Beat", user_data=("create", ("time_beat", None, clip), right_click_menu), callback=self.add_function_node
                 ) 
                 dpg.add_menu_item(
-                    label="Second", user_data=("create", ("time_s", ",", clip), right_click_menu), callback=self.add_function_node
+                    label="Second", user_data=("create", ("time_s", None, clip), right_click_menu), callback=self.add_function_node
                 ) 
             dpg.add_menu_item(
-                label="ToggleOnChange", user_data=("create", ("toggle_on_change", ",", clip), right_click_menu), callback=self.add_function_node
+                label="ToggleOnChange", user_data=("create", ("toggle_on_change", None, clip), right_click_menu), callback=self.add_function_node
             )
         with dpg.menu(parent=parent,label="Custom"):
             dpg.add_menu_item(
-                label="New Custom Node", user_data=("create", ("custom", ",", clip), right_click_menu), callback=self.add_custom_function_node
+                label="New Custom Node", user_data=("create", ("custom", None, clip), right_click_menu), callback=self.add_custom_function_node
             ) 
             dpg.add_menu_item(
                 label="Load Custom Node", user_data=(clip, right_click_menu), callback=self.load_custom_node_callback
@@ -938,7 +937,7 @@ class Gui:
             node_type = args[0]
             node_args = args[1]
             clip = args[2]
-            success, node = state.execute(f"create_node {clip.id} {node_type} {node_args}")
+            success, node = state.execute(f"create_node {clip.id} {node_type} {node_args or ''}")
             if not success:
                 return
             self._last_add_function_node = (sender, app_data, user_data)
@@ -1190,7 +1189,6 @@ class Gui:
             for i, output_channel in enumerate(output_channel_group.outputs):
                 attr_tag = get_node_attribute_tag(clip, output_channel)
                 with dpg.node_attribute(tag=attr_tag):
-                    print(get_output_node_value_tag(clip, output_channel))
                     dpg.add_input_int(label=output_channel.name.split(".")[-1] + f" [{output_channel.dmx_address}]", tag=get_output_node_value_tag(clip, output_channel), width=50, readonly=True, step=0)
 
                 # When user clicks on the output node it will populate the inspector.
@@ -2162,9 +2160,9 @@ class Gui:
     def add_track_output_group(self, sender, app_data, user_data):
         action = user_data[0]
         track = user_data[1]
-        starting_address = user_data[2]
-        channel_names = user_data[3]
         if action == "create":
+            starting_address = user_data[2]
+            channel_names = user_data[3]
             success, output_channel_group = state.execute(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
             if not success:
                 return
@@ -2807,12 +2805,11 @@ class Gui:
         if self.state.project_filepath is not None:
             self.state.project_name = os.path.basename(self.state.project_filepath).replace(f".{PROJECT_EXTENSION}", "")
             with open(self.state.project_filepath, "w") as f:
-                self.state.dump_state(f)
+                f.write(json.dumps(self.state.serialize(), indent=4, sort_keys=False))
             with open(self.state.project_filepath + ".gui", "wb") as f:
                 pickle.dump(self.gui_state, f)
 
             dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}]")
-
 
     def restore_gui_state(self):
         for ptr, pos in self.gui_state.node_positions.items():
@@ -2843,7 +2840,7 @@ class Gui:
     def restore(self, path):
         with open(path, 'r') as f:
             self.new_state = model.ProgramState()
-            self.new_state.deserialize(f)
+            self.new_state.deserialize(json.load(f))
         try:
             with open(path + ".gui", 'rb') as f:
                 self.new_gui_state = pickle.load(f)
