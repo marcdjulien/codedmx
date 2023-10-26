@@ -318,27 +318,21 @@ class DmxOutputGroup(Identifier):
         for i, output_channel in enumerate(self.outputs):
             output_channel.name = f"{name}.{self.channel_names[i]}"
 
-    # TODO: Complete
-    def serialize(self, clip_ptr, i, id_to_ptr):
+    def serialize(self, track_ptr, i, id_to_ptr):
         if i is None:
-            node_ptr = f"{clip_ptr}.node[{{node_i}}]"
+            output_ptr = f"{track_ptr}.group[{{output_i}}]"
         else:
-            node_ptr = f"{clip_ptr}.node[{i}]"
+            output_ptr = f"{track_ptr}.group[{i}]"
+            if id_to_ptr is not None:
+                id_to_ptr[self.id] = output_ptr
 
         data = []
-        node_type = "none" if self.deleted else self.type
-        args = "," if self.deleted else (self.args or ",")
-        data.append(f"execute create_node {clip_ptr} {node_type} {args}")
-        if not self.deleted:
-            data.append(f"{node_ptr}.name:{repr(self.name)}")
-            data.extend(self.serialize_parameters(node_ptr))
-            for input_i, input_channel in enumerate(self.inputs):
-                input_ptr = f"{node_ptr}.in[{input_i}]"
-                id_to_ptr[input_channel.id] = input_ptr
-                data.append(f"execute update_channel_value {input_ptr} {input_channel.get()}")
-            for output_i, output_channel in enumerate(self.outputs):
-                output_ptr = f"{node_ptr}.out[{output_i}]"
-                id_to_ptr[output_channel.id] = output_ptr
+
+        data.append(f"execute create_output_group {track_ptr} {self.dmx_address}", {','.join(self.channel_names)})
+        if self.deleted:
+            data.append(f"execute delete {output_ptr}")
+        else:
+            data.append(f"{output_ptr}.name:{repr(self.name)}")
 
         return data
 
@@ -449,9 +443,9 @@ class FunctionCustomNode(FunctionNode):
     def __init__(self, args, name="Custom"):
         super().__init__(name)
         self.name = name
-        self.n_in_parameter = Parameter("n_inputs")
-        self.n_out_parameter = Parameter("n_outputs")
-        self.code_parameter = Parameter("code")
+        self.n_in_parameter = Parameter("n_inputs", 0)
+        self.n_out_parameter = Parameter("n_outputs", 0)
+        self.code_parameter = Parameter("code", "")
         self.add_parameter(self.n_in_parameter)
         self.add_parameter(self.n_out_parameter)
         self.add_parameter(self.code_parameter)
@@ -600,7 +594,6 @@ class FunctionBinaryOperator(FunctionNode):
             return True, None
         else:
             return super().update_parameter(index, value)
-            
 
 class FunctionScale(FunctionNode):
     nice_title = "Scale"

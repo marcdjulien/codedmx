@@ -10,6 +10,7 @@ from threading import RLock
 import numpy as np
 import os
 import mido
+from collections import defaultdict
 
 from cProfile import Profile
 from pstats import SortKey, Stats
@@ -113,6 +114,8 @@ class Gui:
         self._active_output_channel = None
         self._active_input_channel = None
         self._inspecter_x = list(range(500))
+
+        self._properties_buffer = defaultdict(dict)
 
         self._last_add_function_node = None
         self._custom_node_to_save = None
@@ -842,7 +845,7 @@ class Gui:
             # Special Min/Max Parameters
             def update_min_max_value(sender, app_data, user_data):
                 clip, input_channel, parameter_index, min_max = user_data
-                self.update_parameter(None, app_data, (clip, input_channel, parameter_index))
+                self.update_parameter(None, app_data, (input_channel, parameter_index))
 
                 value = model.cast[input_channel.dtype](app_data)
                 kwarg = {f"{min_max}_value": value}
@@ -876,7 +879,7 @@ class Gui:
                         label=parameter.name, 
                         tag=f"{parameter.id}.value",
                         callback=self.update_parameter, 
-                        user_data=(clip, input_channel, parameter_index), 
+                        user_data=(input_channel, parameter_index), 
                         width=70,
                         default_value=parameter.value if parameter.value is not None else "",
                         on_enter=True,
@@ -965,7 +968,7 @@ class Gui:
                         label=parameter.name, 
                         tag=f"{parameter.id}.value",
                         callback=self.update_parameter, 
-                        user_data=(clip, node, parameter_index), 
+                        user_data=(node, parameter_index), 
                         width=70,
                         default_value=parameter.value if parameter.value is not None else "",
                         on_enter=True,
@@ -1205,6 +1208,34 @@ class Gui:
 
         self.update_io_matrix_window(clip)
 
+
+    def update_parameter_buffer_callback(self, sender, app_data, user_data):
+        parameter, parameter_index = user_data
+        if app_data:
+            self._properties_buffer["parameters"][parameter] = (parameter_index, app_data)
+
+    def update_attr_buffer_callback(self, sender, app_data, user_data):
+        attr_name, tag = user_data
+        if app_data:
+            self._properties_buffer["attrs"][attr_name] = (app_data, tag)
+
+    def save_propperties_callback(self, sender, app_data, user_data):
+        obj = user_data[0]
+        # Parameters
+        for parameter, (parameter_index, value) in self._properties_buffer.get("parameters", {}).items():
+            if isinstance(obj, model.FunctionCustomNode) and parameter_index in [0, 1]:
+                clip = user_data[1]
+                self.update_custom_node_attributes(None, value, (clip, obj, parameter_index))
+            else:
+                self.update_parameter(None, value, (obj, parameter_index))
+            
+        # Attributes
+        for attribute_name, (value, tag) in self._properties_buffer.get("attrs", {}).items():
+            setattr(obj, attribute_name, value)
+            dpg.configure_item(tag, label=value)
+
+        dpg.configure_item(get_properties_window_tag(obj), show=False)
+
     def create_properties_window(self, clip, obj):
         window_tag = get_properties_window_tag(obj)
         with dpg.window(
@@ -1217,6 +1248,7 @@ class Gui:
             show=False,
             modal=True,
             popup=True,
+            no_title_bar=True,
         ) as window:
             properties_table_tag = f"{window_tag}.properties_table"
 
@@ -1229,13 +1261,8 @@ class Gui:
                     dpg.add_text(default_value=obj.nice_title)
 
                 with dpg.table_row():
-                    # No source since the Node's label can't use a input_text.
-                    def set_name_property(sender, app_data, user_data):
-                        if app_data:
-                            obj.name = app_data
-                            dpg.configure_item(get_node_tag(clip, obj), label=obj.name)
                     dpg.add_text(default_value="Name")
-                    dpg.add_input_text(default_value=obj.name, on_enter=True, callback=set_name_property, tag=f"{obj.id}.name")
+                    dpg.add_input_text(default_value=obj.name, callback=self.update_attr_buffer_callback, user_data=("name", get_node_tag(clip, obj)), tag=f"{obj.id}.name")
 
                 if isinstance(obj, model.Parameterized):
                     for parameter_index, parameter in enumerate(obj.parameters):
@@ -1243,11 +1270,22 @@ class Gui:
                             dpg.add_text(default_value=parameter.name)
                             dpg.add_input_text(
                                 source=f"{parameter.id}.value",
-                                callback=self.update_parameter, 
-                                user_data=(clip, obj, parameter_index), 
+                                callback=self.update_parameter_buffer_callback, 
+                                user_data=(parameter, parameter_index),
                                 default_value=parameter.value if parameter.value is not None else "",
-                                on_enter=True,
                             )
+
+                with dpg.table_row():
+                    dpg.add_table_cell()
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Save", callback=self.save_propperties_callback, user_data=(obj,))
+                        
+                        def cancel_properties():
+                            for parameter in obj.parameters:
+                                dpg.set_value(f"{parameter.id}.value", parameter.value)
+                            dpg.configure_item(window_tag, show=False)
+                            dpg.set_value(f"{obj.id}.name", obj.name)
+                        dpg.add_button(label="Cancel", callback=cancel_properties, user_data=obj)
 
     def create_custom_node_properties_window(self, clip, node):
         window_tag = get_properties_window_tag(node)
@@ -1261,6 +1299,7 @@ class Gui:
             show=False,
             modal=True,
             popup=True,
+            no_title_bar=True,
         ) as window:
             properties_table_tag = f"{window_tag}.properties_table"
 
@@ -1269,23 +1308,18 @@ class Gui:
                 dpg.add_table_column(label="Value")
 
                 with dpg.table_row():
-                    # No source
-                    def set_name_property(sender, app_data, user_data):
-                        if app_data:
-                            node.name = app_data
-                            dpg.configure_item(get_node_tag(clip, node), label=node.name)
                     dpg.add_text(default_value="Name")
-                    dpg.add_input_text(default_value=node.name, on_enter=True, callback=set_name_property, tag=f"{node.id}.name")
+                    dpg.add_input_text(default_value=node.name, callback=self.update_attr_buffer_callback, user_data=("name", get_node_tag(clip, node)), tag=f"{node.id}.name")
 
                 # Inputs
                 with dpg.table_row():
                     dpg.add_text(default_value=node.parameters[0].name)
                     dpg.add_input_text(
                         source=f"{node.parameters[0].id}.value",
-                        callback=self.update_custom_node_attributes, 
-                        user_data=(clip, node, 0), 
+                        callback=self.update_parameter_buffer_callback, 
+                        user_data=(node.parameters[0], 0), 
                         default_value=node.parameters[0].value if node.parameters[0].value is not None else "",
-                        on_enter=True,
+                        decimal=True,
                     )
 
                 # Outputs
@@ -1293,10 +1327,10 @@ class Gui:
                     dpg.add_text(default_value=node.parameters[1].name)
                     dpg.add_input_text(
                         source=f"{node.parameters[1].id}.value",
-                        callback=self.update_custom_node_attributes, 
-                        user_data=(clip, node, 1), 
+                        callback=self.update_parameter_buffer_callback, 
+                        user_data=(node.parameters[1], 1), 
                         default_value=node.parameters[1].value if node.parameters[1].value is not None else "",
-                        on_enter=True,
+                        decimal=True,
                     )
 
                 # Code                        
@@ -1304,29 +1338,33 @@ class Gui:
                     dpg.add_text(default_value=node.parameters[2].name)
                     with dpg.group():
                         default_value = node.parameters[2].value.replace("[NEWLINE]", "\n") if node.parameters[2].value is not None else ""
-                        with dpg.value_registry():
-                            dpg.add_string_value(tag=f"{node}.code.text", default_value=default_value)
-                
-                        def log(sender, app_data, user_data):
-                            dpg.set_value(f"{user_data}.code.text", app_data)
-
-                        def save_code():
-                            self.update_parameter(None, dpg.get_value(f"{node}.code.text"), (clip, node, 2))
-                        
                         dpg.add_input_text(
-                            source=f"{node.parameters[2].id}.value",
-                            callback=log, 
-                            user_data=node, 
+                            tag=f"{node.parameters[2].id}.value",
+                            callback=self.update_parameter_buffer_callback, 
+                            user_data=(node.parameters[2], 2), 
                             default_value=default_value,
                             multiline=True,
                             tab_input=True,
                             width=300,
                             height=400
                         )
-                        dpg.add_button(label="Save", callback=save_code)
+
+                with dpg.table_row():
+                    dpg.add_table_cell()
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Save", callback=self.save_propperties_callback, user_data=(node, clip))
+                        
+                        def cancel_properties(sender, app_data, user_data):
+                            node = user_data
+                            for parameter in node.parameters:
+                                dpg.set_value(f"{parameter.id}.value", parameter.value)
+                            dpg.configure_item(window_tag, show=False)
+                            dpg.set_value(f"{node.id}.name", node.name)
+                        dpg.add_button(label="Cancel", callback=cancel_properties, user_data=node)
 
     def add_node_popup_menu(self, node_tag, clip, obj):
         def show_properties_window(sender, app_data, user_data):
+            self._properties_buffer.clear()
             dpg.configure_item(get_properties_window_tag(user_data), show=True)
 
         def save_custom_node(sender, app_data, user_data):
@@ -1488,10 +1526,12 @@ class Gui:
 
     def update_parameter(self, sender, app_data, user_data):
         if app_data:
-            clip, node, parameter_index = user_data
-            success, _ = self.execute_wrapper(f"update_parameter {node.id} {parameter_index} {app_data}")
+            obj, parameter_index = user_data
+            success, _ = self.execute_wrapper(f"update_parameter {obj.id} {parameter_index} {app_data}")
             if not success:
                 raise RuntimeError("Failed to update parameter")
+            dpg.set_value(f"{obj.parameters[parameter_index].id}.value", obj.parameters[parameter_index].value)
+            return success
 
     def update_parameter_by_name(self, obj, parameter_name, value):
         obj.get_parameter(parameter_name).value = value
