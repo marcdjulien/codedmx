@@ -117,6 +117,8 @@ cast = {
     "float": float,
     "any": lambda x: x
 }
+
+
 class Channel(Identifier):
     def __init__(self, **kwargs):
         super().__init__()
@@ -346,12 +348,9 @@ class ClipInputChannel(Parameterized):
             "input_type": self.input_type,
             "mode": self.mode,
             "active_automation": self.active_automation.id if self.active_automation else None,
-            "automations": [],
+            "automations": [automation.serialize() for automation in self.automations],
             "speed": self.speed,
         })
-        
-        for automation in self.automations:
-            data["automations"].append(automation.serialize())
         
         return data
 
@@ -538,16 +537,10 @@ class FunctionNode(Parameterized):
             "name": self.name,
             "type": self.type,
             "args": self.args,
-            "inputs": [],
-            "outputs": [],
+            "inputs": [channel.serialize() for channel in self.inputs],
+            "outputs": [channel.serialize() for channel in self.outputs],
         })
 
-        for input_channel in self.inputs:
-            data["inputs"].append(input_channel.serialize())
-
-        for output_channel in self.outputs:
-            data["outputs"].append(output_channel.serialize())
-        
         return data
 
     def deserialize(self, data):
@@ -572,6 +565,7 @@ class FunctionDeleted(FunctionNode):
     def __init__(self, name):
         super().__init__(name)
         self.deleted = True
+
 
 class FunctionCustomNode(FunctionNode):
     nice_title = "Custom"
@@ -1230,15 +1224,9 @@ class NodeCollection:
 
     def serialize(self):
         data = {
-            "nodes": [],
-            "links": [],
+            "nodes": [node.serialize() for node in self.nodes],
+            "links": [link.serialize() for link in self.links],
         }
-        for node in self.nodes:
-            data["nodes"].append(node.serialize())
-
-        for link in self.links:
-            data["links"].append(link.serialize())
-
         return data
 
     def deserialize(self, data):
@@ -1438,17 +1426,11 @@ class Clip(Identifier):
         data.update({
             "name": self.name,
             "speed": self.speed,
-            "inputs": [],
-            "outputs": [],
+            "inputs": [channel.serialize() for channel in self.inputs],
+            "outputs": [channel.serialize() for channel in self.outputs],
             "node_collection": self.node_collection.serialize(),
         })
 
-        for input_channel in self.inputs:
-            data["inputs"].append(input_channel.serialize())
-        
-        for output_channel in self.outputs:
-            data["outputs"].append(output_channel.serialize())
-            
         return data
 
     def deserialize(self, data):
@@ -1516,12 +1498,9 @@ class Track(Identifier):
         data = super().serialize()
         data.update({
             "name": self.name,
-            "clips": [],
+            "clips": [clip.serialize() if clip else None for clip in self.clips],
             "outputs": [],
         })
-
-        for clip in self.clips:
-            data["clips"].append(clip.serialize() if clip else None)
 
         for output in self.outputs:
             output_type = "single" if isinstance(output, DmxOutput) else "group"
