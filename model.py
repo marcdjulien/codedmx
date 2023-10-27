@@ -29,7 +29,8 @@ MAX_VALUES = {
 TYPES = ["bool", "int", "float", "array", "any"]
 
 UUID_DATABASE = {}
-id_count = 0
+
+ID_COUNT = 0
 
 def update_name(name, other_names):
     def toks(obj_name):
@@ -56,18 +57,45 @@ def update_name(name, other_names):
             my_number = max(my_number, other_number)
     return f"{my_prefix}{my_number+1}"
 
+# Outputs cannot be copied.
+NOT_COPYABLE = [
+    "DmxOutput",
+    "DmxOutputGroup",
+]
+
+def new_ids(data):
+    uuid_pattern = r"[a-f0-9]{8}-?[a-f0-9]{4}-?4[a-f0-9]{3}-?[89ab][a-f0-9]{3}-?[a-f0-9]{12}"
+    string_data = json.dumps(data)
+    obj_ids = re.findall(rf"(\w+\[{uuid_pattern}\])", string_data)
+    if not obj_ids:
+        return None
+    obj_ids = set(obj_ids)
+    for old_id in obj_ids:
+        match2 = re.match(rf"(\w+)\[{uuid_pattern}\]", old_id)
+        if not match2:
+            return None
+        class_name = match2.groups()[0]
+        if class_name in NOT_COPYABLE:
+            continue
+        
+        new_id = f"{class_name}[{uuid.uuid4()}]"
+        string_data = string_data.replace(old_id, new_id)
+
+    return json.loads(string_data)
+
+
 def clear_database():
     global UUID_DATABASE
-    global id_count
-    id_count = 0
+    global ID_COUNT
+    ID_COUNT = 0
     UUID_DATABASE = {}
 
 class Identifier:
     def __init__(self):
         global UUID_DATABASE
-        global id_count
-        self.id = f"{self.__class__.__name__}[{id_count}]"
-        id_count += 1
+        global ID_COUNT
+        self.id = f"{self.__class__.__name__}[{uuid.uuid4()}]"
+        ID_COUNT += 1
         UUID_DATABASE[self.id] = self
         self.deleted = False
 
@@ -90,16 +118,17 @@ cast = {
     "any": lambda x: x
 }
 class Channel(Identifier):
-    def __init__(self, direction="in", value=None, dtype="float", name=None, size=1):
+    def __init__(self, **kwargs):
         super().__init__()
-        if value is None:
-            value = 0 if size == 1 else[0]*size
+        self.value = kwargs.get("value")
+        self.size = kwargs.get("size", 1)
 
-        self.value = value
-        self.size = size
-        self.direction = direction
-        self.dtype = dtype
-        self.name = name
+        if self.value is None:
+            self.value = 0 if self.size == 1 else [0]*self.size
+
+        self.direction = kwargs.get("direction", "in")
+        self.dtype = kwargs.get("dtype", "float")
+        self.name = kwargs.get("name", "Channel")
 
     def get(self):
         return cast[self.dtype](self.value)
@@ -118,30 +147,38 @@ class Channel(Identifier):
         })
         return data
 
-    # No deserialize, user should create a new objects based on info
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.direction = data["direction"]
+        self.value = data["value"]
+        self.dtype = data["dtype"]
+        self.name = data["name"]
+        self.size = data["size"]
+
 
 class Parameter(Identifier):
-    def __init__(self, name, value=None):
+    def __init__(self, name="", value=None):
         super().__init__()
         self.name = name
         self.value = value
 
-    def __str__(self):
-        return f"Parameter({self.name}, {self.value})"
-
     def serialize(self):
-        return {
+        data = super().serialize()
+        data.update({
             "name": self.name,
             "value": self.value,
-        }
+        })
+        return data
 
-    @staticmethod
-    def deserialize(data):
-        return Parameter(data["name"], data["value"])
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        self.value = data["value"]
 
-class Parameterized:
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+
+class Parameterized(Identifier):
+    def __init__(self):
+        super().__init__()
         self.parameters = []
 
     def update_parameter(self, index, value):
@@ -177,25 +214,29 @@ class Parameterized:
     def deserialize(self, data):
         super().deserialize(data)
         parameters_data = data["parameters"]
-        for parameter_data in parameters_data:
-            self.parameters.append(Parameter.deserialize(parameter_data))
+        for i, parameter_data in enumerate(parameters_data):
+            self.parameters[i].deserialize(parameter_data)
 
 
-class ClipInputChannel(Parameterized, Channel):
+class ClipInputChannel(Parameterized):
     nice_title = "Input"
 
-    def __init__(self, direction="in", value=0, dtype="float", name=None):
-        self.input_type = dtype
-        super().__init__(direction, value, dtype, name)
-        self.automations = []
-        self.active_automation = None
-        self.active_automation_i = None
+    def __init__(self, **kwargs):
+        super().__init__()
+        self.name = kwargs.get("name", "")
+        self.channel = Channel(**kwargs)
+        self.ext_channel = Channel(**kwargs)
+        self.input_type = kwargs.get("dtype", "float")
+
         self.mode = "automation"
         self.min_parameter = Parameter("min", 0)
-        self.max_parameter = Parameter("max",  MAX_VALUES[self.dtype])
+        self.max_parameter = Parameter("max",  MAX_VALUES[self.channel.dtype])
         self.add_parameter(self.min_parameter)
         self.add_parameter(self.max_parameter)
-        self.ext_value = self.value
+
+
+        self.automations = []
+        self.active_automation = None
         self.speed = 0
         self.last_beat = 0
 
@@ -207,49 +248,68 @@ class ClipInputChannel(Parameterized, Channel):
         if self.mode == "armed":
             if self.active_automation is not None:
                 value = self.active_automation.value(current_beat)
-                self.set(value)
+                self.channel.set(value)
             if restarted:
                 self.mode = "recording"
         elif self.mode == "recording":
             if restarted:
                 self.mode = "automation"
-            point = (current_beat, self.ext_get())
+            point = (current_beat, self.ext_channel.get())
             self.active_automation.add_point(point, replace_near=True)
-            self.set(self.ext_get())
+            self.channel.set(self.ext_channel.get())
         elif self.mode == "automation":
             if self.active_automation is not None:
                 value = self.active_automation.value(current_beat)
-                self.set(value)
+                self.channel.set(value)
         else: # manual
-            self.set(self.ext_get())
+            self.channel.set(self.ext_channel.get())
 
         self.last_beat = current_beat
 
     def ext_get(self):
-        return cast[self.dtype](self.ext_value)
+        return self.ext_channel.get()
 
     def ext_set(self, value):
-        self.ext_value = value
+        value = max(self.min_parameter.value, value)
+        value = min(self.max_parameter.value, value)
+        self.ext_channel.set(value)
 
     def set(self, value):
         value = max(self.min_parameter.value, value)
         value = min(self.max_parameter.value, value)
-        super().set(value)
+        self.channel.set(value)
+
+    def get(self):
+        return self.channel.get()
+
+    @property
+    def dtype(self):
+        return self.channel.dtype 
+
+    @property
+    def direction(self):
+        return self.channel.direction 
+
+    @property
+    def value(self):
+        return self.channel.value 
+
+    @property
+    def size(self):
+        return self.channel.size 
 
     def set_active_automation(self, automation):
         assert automation in self.automations
         self.active_automation = automation
-        self.active_automation_i = self.automations.index(automation)
         return True
 
-    def add_automation(self, clear=False):
+    def add_automation(self):
         n = len(self.automations)
         new_automation = ChannelAutomation(
-            self.dtype, 
+            self.channel.dtype, 
             f"Preset #{n}", 
             min_value=self.get_parameter("min").value, 
             max_value=self.get_parameter("max").value, 
-            clear=clear
         )
         self.automations.append(new_automation)
         self.set_active_automation(new_automation)
@@ -261,7 +321,7 @@ class ClipInputChannel(Parameterized, Channel):
 
     def update_parameter(self, index, value):
         if self.parameters[index] in [self.min_parameter, self.max_parameter]:
-            self.parameters[index].value = cast[self.dtype](value)
+            self.parameters[index].value = cast[self.channel.dtype](value)
             min_value = self.min_parameter.value
             max_value = self.max_parameter.value
             for automation in self.automations:
@@ -280,13 +340,14 @@ class ClipInputChannel(Parameterized, Channel):
         data = super().serialize()
         
         data.update({
+            "name": self.name,
+            "channel": self.channel.serialize(),
+            "ext_channel": self.ext_channel.serialize(),
             "input_type": self.input_type,
-            "speed": self.speed,
-            "active_automation": self.active_automation.id if self.active_automation else None,
-            "active_automation_i": self.active_automation_i,
             "mode": self.mode,
-            "ext_value": self.ext_value,
-            "automations": []
+            "active_automation": self.active_automation.id if self.active_automation else None,
+            "automations": [],
+            "speed": self.speed,
         })
         
         for automation in self.automations:
@@ -296,15 +357,16 @@ class ClipInputChannel(Parameterized, Channel):
 
     def deserialize(self, data):
         super().deserialize(data)
-        
+
+        self.name = data["name"]
+        self.channel.deserialize(data["channel"])
+        self.ext_channel.deserialize(data["ext_channel"])
+        self.input_type = data["input_type"]
+        self.mode = data["mode"]
+        self.speed = data["speed"]
+
         for automation_data in data["automations"]:
-            automation = ChannelAutomation(
-                automation_data["dtype"],
-                automation_data["name"],
-                self.get_parameter("min").value,
-                self.get_parameter("max").value,
-                clear=True,
-            )
+            automation = ChannelAutomation()
             automation.deserialize(automation_data)
             self.automations.append(automation)
         self.set_active_automation(UUID_DATABASE[data["active_automation"]])
@@ -334,7 +396,7 @@ class DmxOutput(Channel):
 
 class DmxOutputGroup(Identifier):
 
-    def __init__(self, channel_names, dmx_address=1, name="Group"):
+    def __init__(self, channel_names=[], dmx_address=1, name="Group"):
         super().__init__()
         self.name = name
         self.dmx_address = dmx_address
@@ -381,11 +443,14 @@ class DmxOutputGroup(Identifier):
 
 
 class OscInput(ClipInputChannel):
-    def __init__(self, dtype):
-        super().__init__(direction="out", dtype=dtype, name=f"OSC[{dtype}]")
+    def __init__(self, **kwargs):
+        kwargs.setdefault("name", f"OSC")
+        kwargs.setdefault("direction", "out")
+        kwargs.setdefault("dtype", "int")
+        super().__init__(**kwargs)
         self.endpoint_parameter = Parameter("endpoint", value="/")
         self.add_parameter(self.endpoint_parameter)
-        self.input_type = "osc_input_"+self.dtype
+        self.input_type = "osc_input_" + self.dtype
 
     def update_parameter(self, index, value):
         if self.parameters[index] == self.endpoint_parameter:
@@ -398,8 +463,12 @@ class OscInput(ClipInputChannel):
 
 
 class MidiInput(ClipInputChannel):
-    def __init__(self):
-        super().__init__(direction="out", dtype="int", name=f"MIDI")
+    
+    def __init__(self, **kwargs):
+        kwargs.setdefault("name", "MIDI")
+        kwargs.setdefault("direction", "out")
+        kwargs.setdefault("dtype", "int")
+        super().__init__(**kwargs)
         self.device_parameter = Parameter("device", value="")
         self.id_parameter = Parameter("id", value="/")
         self.add_parameter(self.device_parameter)
@@ -425,7 +494,7 @@ class MidiInput(ClipInputChannel):
 
 
 class ChannelLink(Identifier):
-    def __init__(self, src_channel, dst_channel):
+    def __init__(self, src_channel=None, dst_channel=None):
         super().__init__()
         self.src_channel = src_channel
         self.dst_channel = dst_channel
@@ -441,16 +510,21 @@ class ChannelLink(Identifier):
         })
         return data
 
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.src_channel = UUID_DATABASE[data["src_channel"]]
+        self.dst_channel = UUID_DATABASE[data["dst_channel"]]
 
-class FunctionNode(Parameterized, Identifier):
 
-    def __init__(self, name):
+class FunctionNode(Parameterized):
+
+    def __init__(self, args, name=""):
         super().__init__()
         self.name = name
         self.inputs: Channel = []
         self.outputs: Channel = []
+        self.args = args
         self.type = None
-        self.args = None
 
     def transform(self):
         raise NotImplemented
@@ -478,13 +552,18 @@ class FunctionNode(Parameterized, Identifier):
 
     def deserialize(self, data):
         super().deserialize(data)
+
         self.name = data["name"]
         self.type = data["type"]
         self.args = data["args"]
-        for input_data in data["inputs"]:
-            self.inputs.append(Channel.deserialize(input_data))
-        for output_data in data["outputs"]:
-            self.outputs.append(Channel.deserialize(output_data))
+        for i, input_data in enumerate(data["inputs"]):
+            channel = Channel()
+            channel.deserialize(input_data)
+            self.inputs[i] = channel
+        for i, output_data in enumerate(data["outputs"]):
+            channel = Channel()
+            channel.deserialize(output_data)
+            self.outputs[i] = channel
 
 
 class FunctionDeleted(FunctionNode):
@@ -498,7 +577,7 @@ class FunctionCustomNode(FunctionNode):
     nice_title = "Custom"
 
     def __init__(self, args, name="Custom"):
-        super().__init__(name)
+        super().__init__(args, name)
         self.name = name
         self.n_in_parameter = Parameter("n_inputs", 0)
         self.n_out_parameter = Parameter("n_outputs", 0)
@@ -558,7 +637,7 @@ class FunctionCustomNode(FunctionNode):
             elif n > len(self.inputs):
                 for _ in range(delta):
                     i = len(self.inputs)
-                    new_channel = Channel("in", dtype="any", name=f"i[{i}]")
+                    new_channel = Channel(direction="in", dtype="any", name=f"i[{i}]")
                     self.inputs.append(new_channel)
                     channels.append(new_channel)
             self.parameters[0].value = value
@@ -575,7 +654,7 @@ class FunctionCustomNode(FunctionNode):
             elif n > len(self.outputs):
                 for _ in range(delta):
                     i = len(self.outputs)
-                    new_channel = Channel("out", dtype="any", name=f"o[{i}]")
+                    new_channel = Channel(direction="out", dtype="any", name=f"o[{i}]")
                     self.outputs.append(new_channel)
                     channels.append(new_channel)
             self.parameters[1].value = value
@@ -587,24 +666,20 @@ class FunctionCustomNode(FunctionNode):
             return super().update_parameter(index, value)
 
 
-    def serialize(self):
-        return {}
-
-
 class FunctionBinaryOperator(FunctionNode):
     nice_title = "Binary Operator"
 
-    def __init__(self, name="Operator"):
-        super().__init__(name)
+    def __init__(self, args, name="Operator"):
+        super().__init__(args, name)
         self.op_parameter = Parameter("op")
         self.add_parameter(self.op_parameter)
         self.inputs = [
-            Channel("in", 0, name=f"x"), 
-            Channel("in", 0, name=f"y"), 
+            Channel(direction="in", value=0, name=f"x"), 
+            Channel(direction="in", value=0, name=f"y"), 
         ]
-        self.outputs.append(
-            Channel("out", 0, name=f"z")
-        )
+        self.outputs = [
+            Channel(direction="out", value=0, name=f"z")
+        ]
         self.type = "binary_operator"
         self.f = None
 
@@ -633,7 +708,7 @@ class FunctionBinaryOperator(FunctionNode):
 class FunctionScale(FunctionNode):
     nice_title = "Scale"
 
-    def __init__(self, name="Scale"):
+    def __init__(self, args, name="Scale"):
         super().__init__(name)
         self.in_min_parameter = Parameter("in.min", 0)
         self.in_max_parameter = Parameter("in.max", 255)
@@ -644,11 +719,11 @@ class FunctionScale(FunctionNode):
         self.add_parameter(self.out_min_parameter)
         self.add_parameter(self.out_max_parameter)
         self.inputs = [
-            Channel("in", 0, name=f"x"), 
+            Channel(direction="in", value=0, name=f"x"), 
         ]
-        self.outputs.append(
-            Channel("out", 0, name=f"y")
-        )
+        self.outputs = [
+            Channel(direction="out", value=0, name=f"y")
+        ]
         self.type = "scale"
 
     def transform(self):
@@ -678,19 +753,18 @@ class FunctionDemux(FunctionNode):
         "array": [],
     }
 
-    def __init__(self, n, name="Demux"):
-        super().__init__(name)
-        self.n = int(n)
+    def __init__(self, args, name="Demux"):
+        super().__init__(args, name)
+        self.n = int(args)
         self.parameters = []
         self.inputs = [
-            Channel("in", 0, dtype="int", name=f"sel"),
-            Channel("in", dtype="any", name=f"val")
+            Channel(direction="in", value=0, dtype="int", name=f"sel"),
+            Channel(direction="in", dtype="any", name=f"val")
         ]
         for i in range(self.n):
-            self.outputs.append(Channel("out", dtype="any", name=f"{i+1}"))
+            self.outputs.append(Channel(direction="out", dtype="any", name=f"{i+1}"))
 
         self.type = "demux"
-        self.args = str(n)
 
     def transform(self):
         value = self.inputs[1].get()
@@ -711,18 +785,17 @@ class FunctionDemux(FunctionNode):
 class FunctionMultiplexer(FunctionNode):
     nice_title = "Multiplexer"
 
-    def __init__(self, n, name="Multiplexer"):
-        super().__init__(name)
-        self.n = int(n)
+    def __init__(self, args, name="Multiplexer"):
+        super().__init__(args, name)
+        self.n = int(args)
         self.inputs = [
-            Channel("in", 1, dtype="int", name=f"sel")
+            Channel(direction="in", value=1, dtype="int", name=f"sel")
         ]
         for i in range(self.n):
-            self.inputs.append(Channel("in", dtype="any", name=f"{i+1}"))
+            self.inputs.append(Channel(direction="in", dtype="any", name=f"{i+1}"))
 
-        self.outputs.append(Channel("out", dtype="any", name=f"out"))
+        self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
         self.type = "multiplexer"
-        self.args = str(n)
 
     def transform(self):
         selected = int(self.inputs[0].get())
@@ -733,10 +806,10 @@ class FunctionMultiplexer(FunctionNode):
 class FunctionPassthrough(FunctionNode):
     nice_title = "Passthrough"
 
-    def __init__(self, name="Passthrough"):
-        super().__init__(name)
-        self.inputs.append(Channel("in", dtype="any", name=f"in"))
-        self.outputs.append(Channel("out", dtype="any", name=f"out"))
+    def __init__(self, args, name="Passthrough"):
+        super().__init__(args, name)
+        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
+        self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
         self.type = "passthrough"
 
     def transform(self):
@@ -747,8 +820,8 @@ class FunctionTimeSeconds(FunctionNode):
     nice_title = "Seconds"
 
     def __init__(self, time_func, name="Seconds"):
-        super().__init__(name)
-        self.outputs.append(Channel("out", dtype="float", name="s"))
+        super().__init__(args, name)
+        self.outputs.append(Channel(direction="out", dtype="float", name="s"))
         self.type = "time_s"
         self.time_func = time_func
 
@@ -760,8 +833,8 @@ class FunctionTimeBeats(FunctionNode):
     nice_title = "Beats"
 
     def __init__(self, time_func, name="Beats"):
-        super().__init__(name)
-        self.outputs.append(Channel("out", dtype="float", name="beat"))
+        super().__init__(args, name)
+        self.outputs.append(Channel(direction="out", dtype="float", name="beat"))
         self.type = "time_beat"
         self.time_func = time_func
 
@@ -772,10 +845,10 @@ class FunctionTimeBeats(FunctionNode):
 class FunctionChanging(FunctionNode):
     nice_title = "Changing"
 
-    def __init__(self, name="Changing"):
-        super().__init__(name)
-        self.inputs.append(Channel("in", dtype="any", name=f"in"))
-        self.outputs.append(Channel("out", dtype="bool", name=f"out"))
+    def __init__(self, args, name="Changing"):
+        super().__init__(args, name)
+        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
+        self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
         self.type = "changing"
         self._last_value = None
 
@@ -795,10 +868,10 @@ class FunctionChanging(FunctionNode):
 class FunctionToggleOnChange(FunctionNode):
     nice_title = "Toggle On Change"
 
-    def __init__(self, name="ToggleOnChange"):
-        super().__init__(name)
-        self.inputs.append(Channel("in", dtype="any", name=f"in"))
-        self.outputs.append(Channel("out", dtype="bool", name=f"out"))
+    def __init__(self, args, name="ToggleOnChange"):
+        super().__init__(args, name)
+        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
+        self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
         self.type = "toggle_on_change"
         self._last_value = None
         self._toggle_value = 0
@@ -821,15 +894,14 @@ class FunctionToggleOnChange(FunctionNode):
 class FunctionLastChanged(FunctionNode):
     nice_title = "Last Changed"
 
-    def __init__(self, n, name="LastChanged"):
-        super().__init__(name)
-        self.n = int(n)
+    def __init__(self, args, name="LastChanged"):
+        super().__init__(args, name)
+        self.n = int(args)
         for i in range(self.n):
-            self.inputs.append(Channel("in", 0, dtype="any", name=f"{i+1}"))
+            self.inputs.append(Channel(direction="in", value=0, dtype="any", name=f"{i+1}"))
 
-        self.outputs.append(Channel("out", dtype="int", name=f"out{n}"))
+        self.outputs.append(Channel(direction="out", dtype="int", name=f"out{n}"))
         self.type = "last_changed"
-        self.args = n
         self._last_values = [None]*n
         self._last_changed_index = 0
 
@@ -853,15 +925,14 @@ class FunctionLastChanged(FunctionNode):
 class FunctionAggregator(FunctionNode):
     nice_title = "Aggregator"
 
-    def __init__(self, n, name="Aggregator"):
-        super().__init__(name)
-        self.n = int(n)
+    def __init__(self, args, name="Aggregator"):
+        super().__init__(args, name)
+        self.n = int(args)
         for i in range(self.n):
-            self.inputs.append(Channel("in", 0, dtype="any", name=f"{i+1}"))
+            self.inputs.append(Channel(direction="in", value=0, dtype="any", name=f"{i+1}"))
 
-        self.outputs.append(Channel("out", dtype="any", size=n, name=f"out{n}"))
+        self.outputs.append(Channel(direction="out", dtype="any", size=self.n, name=f"out{self.n}"))
         self.type = "aggregator"
-        self.args = n
 
     def transform(self):
         value = [channel.get() for channel in self.inputs]
@@ -871,15 +942,14 @@ class FunctionAggregator(FunctionNode):
 class FunctionSeparator(FunctionNode):
     nice_title = "Separator"
 
-    def __init__(self, n, name="Separator"):
-        super().__init__(name)
-        self.n = int(n)
-        self.inputs.append(Channel("in", dtype="any", size=n, name=f"in{n}"))
+    def __init__(self, args, name="Separator"):
+        super().__init__(args, name)
+        self.n = int(args)
+        self.inputs.append(Channel(direction="in", dtype="any", size=self.n, name=f"in{self.n}"))
 
         for i in range(self.n):
-            self.outputs.append(Channel("out", dtype="any", name=f"out{n}"))
+            self.outputs.append(Channel(direction="out", dtype="any", name=f"out{n}"))
         self.type = "separator"
-        self.args = n
 
     def transform(self):
         values = self.inputs[0].get()
@@ -890,14 +960,14 @@ class FunctionSeparator(FunctionNode):
 class FunctionRandom(FunctionNode):
     nice_title = "Random"
 
-    def __init__(self, name="Random"):
-        super().__init__(name)
+    def __init__(self, args, name="Random"):
+        super().__init__(args, name)
         self.inputs = [
-            Channel("in", 0, dtype="int", name=f"a"),
-            Channel("in", 1, dtype="int", name=f"b")
+            Channel(direction="in", value=0, dtype="int", name=f"a"),
+            Channel(direction="in", value=1, dtype="int", name=f"b")
         ]
         self.outputs.append(
-            Channel("out", 0, name=f"z")
+            Channel(direction="out", value=0, name=f"z")
         )
         self.type = "random"
 
@@ -912,14 +982,14 @@ class FunctionRandom(FunctionNode):
 class FunctionSample(FunctionNode):
     nice_title = "Sample"
 
-    def __init__(self, name="Sample"):
-        super().__init__(name)
+    def __init__(self, args, name="Sample"):
+        super().__init__(args, name)
         self.inputs = [
-            Channel("in", 1, name=f"rate", dtype="float"),
-            Channel("in", 0, name=f"in", dtype="float")
+            Channel(direction="in", value=1, name=f"rate", dtype="float"),
+            Channel(direction="in", value=0, name=f"in", dtype="float")
         ]
         self.outputs.append(
-            Channel("out", 0, name=f"out", dtype="float")
+            Channel(direction="out", value=0, name=f"out", dtype="float")
         )
         self.type = "sample"
 
@@ -942,15 +1012,15 @@ class FunctionSample(FunctionNode):
 class FunctionBuffer(FunctionNode):
     nice_title = "Buffer"
 
-    def __init__(self, name="Buffer"):
-        super().__init__(name)
+    def __init__(self, args, name="Buffer"):
+        super().__init__(args, name)
         self.n_parameter = Parameter("n", value=60)
         self.add_parameter(self.n_parameter)
         self.inputs = [
-            Channel("in", name=f"in", dtype="any")
+            Channel(direction="in", name=f"in", dtype="any")
         ]
         self.outputs.append(
-            Channel("out", name=f"out", dtype="any")
+            Channel(direction="out", name=f"out", dtype="any")
         )
         self.type = "buffer"
 
@@ -983,18 +1053,18 @@ class FunctionBuffer(FunctionNode):
 class FunctionCanvas1x8(FunctionNode):
     nice_title = "Canvas 1x8"
 
-    def __init__(self, name="Canvas1x8"):
-        super().__init__(name)
+    def __init__(self, args, name="Canvas1x8"):
+        super().__init__(args, name)
         self.inputs = [
-            Channel("in", 0, name="start", dtype="int"),
-            Channel("in", 0, name="size", dtype="int"),
-            Channel("in", 0, name="r", dtype="int"),
-            Channel("in", 0, name="g", dtype="int"),
-            Channel("in", 0, name="b", dtype="int"),
-            Channel("in", 0, name="clear", dtype="bool"),
+            Channel(direction="in", value=0, name="start", dtype="int"),
+            Channel(direction="in", value=0, name="size", dtype="int"),
+            Channel(direction="in", value=0, name="r", dtype="int"),
+            Channel(direction="in", value=0, name="g", dtype="int"),
+            Channel(direction="in", value=0, name="b", dtype="int"),
+            Channel(direction="in", value=0, name="clear", dtype="bool"),
         ]
         self.outputs.extend([
-            Channel("out", 0, name=f"{rgb}{n}", dtype="float")
+            Channel(direction="out", value=0, name=f"{rgb}{n}", dtype="float")
             for n in range(8)
             for rgb in "rgb"
         ])
@@ -1020,20 +1090,20 @@ class FunctionCanvas1x8(FunctionNode):
 class FunctionPixelMover1(FunctionNode):
     nice_title = "Pixel Mover"
 
-    def __init__(self, name="PixelMover1"):
-        super().__init__(name)
+    def __init__(self, args, name="PixelMover1"):
+        super().__init__(args, name)
         self.inputs = [
-            Channel("in", 0, name="i1", dtype="int"),
-            Channel("in", 0, name="r1", dtype="int"),
-            Channel("in", 0, name="g1", dtype="int"),
-            Channel("in", 0, name="b1", dtype="int"),
-            Channel("in", 0, name="i2", dtype="int"),
-            Channel("in", 0, name="r2", dtype="int"),
-            Channel("in", 0, name="g2", dtype="int"),
-            Channel("in", 0, name="b2", dtype="int"),
+            Channel(direction="in", value=0, name="i1", dtype="int"),
+            Channel(direction="in", value=0, name="r1", dtype="int"),
+            Channel(direction="in", value=0, name="g1", dtype="int"),
+            Channel(direction="in", value=0, name="b1", dtype="int"),
+            Channel(direction="in", value=0, name="i2", dtype="int"),
+            Channel(direction="in", value=0, name="r2", dtype="int"),
+            Channel(direction="in", value=0, name="g2", dtype="int"),
+            Channel(direction="in", value=0, name="b2", dtype="int"),
         ]
         self.outputs.extend([
-            Channel("out", 0, name=f"{rgb}{n}", dtype="float")
+            Channel(direction="out", value=0, name=f"{rgb}{n}", dtype="float")
             for n in range(8)
             for rgb in "rgb"
         ])
@@ -1103,10 +1173,7 @@ class NodeCollection:
             return
 
         n = len(self.nodes)
-        if arg is not None:
-            node = cls(arg)
-        else:
-            node = cls()
+        node = cls(arg)
 
         self.nodes.append(node)
         return node
@@ -1119,6 +1186,8 @@ class NodeCollection:
                 continue
             if link.dst_channel == dst_channel:
                 return False
+        if src_channel.size != dst_channel.size:
+            return False
         link = ChannelLink(src_channel, dst_channel)
         self.links.append(link)
         return True
@@ -1175,18 +1244,12 @@ class NodeCollection:
     def deserialize(self, data):
         for node_data in data["nodes"]:
             cls = FUNCTION_TYPES[node_data["type"]]
-            if node_data["args"] is not None:
-                node = cls(args=node_data["args"], name=node_data["name"])
-            else:
-                node = cls(name=node_data["name"])
+            node = cls(args=node_data["args"], name=node_data["name"])
             node.deserialize(node_data)
-
             self.nodes.append(node)
 
         for link_data in data["links"]:
-            src_channel = UUID_DATABASE[link_data["src_channel"]]
-            dst_channel = UUID_DATABASE[link_data["dst_channel"]]
-            link = ChannelLink(src_channel, dst_channel)
+            link = ChannelLink()
             link.deserialize(link_data)
             self.links.append(link)
         
@@ -1198,15 +1261,15 @@ class ChannelAutomation(Identifier):
         "float": "linear",
     }
     TIME_RESOLUTION = 1/60.0
-    def __init__(self, dtype, name, min_value=0, max_value=1, clear=False):
+    def __init__(self, dtype="int", name="", min_value=0, max_value=1):
 
         super().__init__()
-        self.length = 4 # beats
-        self.values_x = [] if clear else [0, self.length]
-        self.values_y = [] if clear else [min_value, max_value]
-        self.f = None if clear else scipy.interpolate.interp1d(self.values_x, self.values_y)
         self.dtype = dtype
         self.name = name
+        self.length = 4 # beats
+        self.values_x = [0, self.length]
+        self.values_y = [min_value, max_value]
+        self.f = scipy.interpolate.interp1d(self.values_x, self.values_y)
         self.interpolation = self.default_interpolation_type[self.dtype]
 
     def value(self, beat_time):
@@ -1308,16 +1371,19 @@ class ChannelAutomation(Identifier):
 
     def deserialize(self, data):
         super().deserialize(data)
+
+        self.name = data["name"]
+        self.dtype = data["dtype"]
         self.values_x = data["values_x"]
         self.values_y = data["values_y"]
-        self.dtype = data["dtype"]
         self.name = data["name"]
         self.set_interpolation(data["interpolation"])
+        # The will re-interpolate for us.
         self.set_length(data["length"])
 
 
 class Clip(Identifier):
-    def __init__(self, outputs):
+    def __init__(self, outputs=[]):
         super().__init__()
         self.name = ""
 
@@ -1336,11 +1402,11 @@ class Clip(Identifier):
         n = len(self.inputs)
         if input_type.startswith("osc_input"):
             input_type = input_type.replace("osc_input_", "")
-            new_inp = OscInput(input_type)
+            new_inp = OscInput(dtype=input_type)
         elif input_type == "midi":
             new_inp = MidiInput()
         else:
-            new_inp = ClipInputChannel("out", dtype=input_type, name=f"In.{n}")
+            new_inp = ClipInputChannel(direction="out", dtype=input_type, name=f"In.{n}")
         self.inputs.append(new_inp)
         return new_inp
 
@@ -1385,39 +1451,30 @@ class Clip(Identifier):
             
         return data
 
-    @classmethod
-    def deserialize(cls, data):
-        if data is None:
-            return None
+    def deserialize(self, data):
+        super().deserialize(data)
 
-        outputs = [UUID_DATABASE[output_data["id"]] for output_data in data["outputs"]]
-        clip = Clip(outputs)
-        clip.speed = data["speed"]
+        self.name = data["name"]
+        self.speed = data["speed"]
+        self.outputs = [UUID_DATABASE[output_data["id"]] for output_data in data["outputs"]]
 
         for input_data in data["inputs"]:
             if input_data["input_type"] in cast.keys():
-                channel = ClipInputChannel(
-                    direction=input_data["direction"],
-                    value=input_data["value"],
-                    dtype=input_data["dtype"],
-                    name=input_data["name"],
-                )
+                channel = ClipInputChannel()
                 channel.deserialize(input_data)
             elif input_data["input_type"].startswith("osc_input_"):
-                channel = OscInput(input_data["dtype"])
+                channel = OscInput()
                 channel.deserialize(input_data)
             elif input_data["input_type"] == "midi":
                 channel = MidiInput()
                 channel.deserialize(input_data)
-            clip.inputs.append(channel)
-        
-        clip.node_collection.deserialize(data["node_collection"])
+            self.inputs.append(channel)
 
-        return clip
+        self.node_collection.deserialize(data["node_collection"])
 
 
 class Track(Identifier):
-    def __init__(self, name, n_clips=20):
+    def __init__(self, name="", n_clips=20):
         super().__init__()
         self.name = name
         self.clips = [None] * n_clips
@@ -1472,22 +1529,27 @@ class Track(Identifier):
 
         return data
 
-    def deserialize(self, track_data):
-        super().deserialize(track_data)
-        self.name = track_data["name"]
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        n_clips = len(data["clips"])
+        self.clips = [None] * n_clips
 
-        for output_data in track_data["outputs"]:
-            output_type, data = output_data
+        for output_type, output_data in data["outputs"]:
             if output_type == "single":
                 output = DmxOutput()
             elif output_type == "group":
-                output = DmxOutputGroup(data["channel_names"])
-            output.deserialize(data)
+                output = DmxOutputGroup(output_data["channel_names"])
+            output.deserialize(output_data)
             self.outputs.append(output)
 
 
-        for i, clip_data in enumerate(track_data["clips"]):
-            self.clips[i] = (Clip.deserialize(clip_data))
+        for i, clip_data in enumerate(data["clips"]):
+            if clip_data is None:
+                continue
+            new_clip = Clip()
+            new_clip.deserialize(clip_data)
+            self.clips[i] = new_clip
 
 
 class IO:
@@ -1738,7 +1800,9 @@ class ProgramState(Identifier):
         self.project_filepath = data["project_filepath"]
 
         for i, track_data in enumerate(data["tracks"]):
-            self.tracks[i].deserialize(track_data)
+            new_track = Track()
+            new_track.deserialize(track_data)
+            self.tracks[i] = new_track
 
     def execute(self, full_command):
         global IO_OUTPUTS
@@ -1850,9 +1914,8 @@ class ProgramState(Identifier):
 
         elif cmd == "add_automation":
             input_id = toks[1]
-            clear = True if len(toks) == 3 else False
             input_channel = self.get_obj(input_id)
-            return True, input_channel.add_automation(clear=clear)
+            return True, input_channel.add_automation()
 
         elif cmd == "add_automation_point":
             automation_id = toks[1]
@@ -1930,18 +1993,22 @@ class ProgramState(Identifier):
                 return False, None
 
         elif cmd == "duplicate_clip":
-            new_track_i = toks[1]
-            new_clip_i = toks[2]
+            new_track_i = int(toks[1])
+            new_clip_i = int(toks[2])
             clip_id = toks[3]
 
             new_track = self.tracks[int(new_track_i)]
             new_track_ptr = f"*track[{new_track_i}]"
             old_clip = self.get_obj(clip_id)
 
-            id_to_ptr = {}
-            data = old_clip.serialize(new_track_ptr, new_clip_i, id_to_ptr)
-            self.deserialize(data)
-            return True, new_track.clips[int(new_clip_i)]
+            clip_data = old_clip.serialize()
+            new_clip_data = new_ids(clip_data)
+            if new_clip_data is None:
+                return False, None
+            new_clip = Clip()
+            new_clip.deserialize(new_clip_data)
+            new_track[new_clip_i] = new_clip
+            return True, new_clip
 
         elif cmd == "duplicate_input":
             clip_id = toks[1]
@@ -1984,6 +2051,7 @@ class ProgramState(Identifier):
                 if x is not None:
                     automation.add_point((x+old_length, y))
             return True
+
         elif cmd == "midi_map":
             obj_id = toks[1]
             obj = self.get_obj(obj_id)
