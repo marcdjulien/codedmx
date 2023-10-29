@@ -317,10 +317,6 @@ class ClipInputChannel(Parameterized):
         self.set_active_automation(new_automation)
         return new_automation
 
-    def remove_automation(self, index):
-        self.automations[index].delete = True
-        return True
-
     def update_parameter(self, index, value):
         if self.parameters[index] in [self.min_parameter, self.max_parameter]:
             self.parameters[index].value = cast[self.channel.dtype](value)

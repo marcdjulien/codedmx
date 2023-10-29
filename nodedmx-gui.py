@@ -1784,6 +1784,13 @@ class Gui:
 
             def delete_preset(sender, app_data, user_data):
                 input_channel, automation = user_data
+                
+                def get_valid_automations(input_channel):
+                    return [a for a in input_channel.automations if not a.deleted]
+
+                if len(get_valid_automations(input_channel)) <= 1:
+                    return
+
                 success = self.execute_wrapper(f"delete {automation.id}")
                 if success:
                     tab_bar_tag = f"{input_channel.id}.tab_bar"
@@ -1793,6 +1800,10 @@ class Gui:
                     ]
                     for tag in tags_to_delete:
                         dpg.delete_item(tag)
+
+                if input_channel.active_automation == automation:
+                    input_channel.set_active_automation(get_valid_automations(input_channel)[0])
+                    self.reset_automation_plot(input_channel)
 
             def add_preset(sender, app_data, user_data):
                 input_channel = user_data
@@ -2309,9 +2320,9 @@ class Gui:
             link_key = alias.replace(".gui.link", "")
             self._delete_link(alias, link_key, self._active_clip)
 
-    def copy_node_position(self, clip, from_obj, to_obj):
-        from_pos = dpg.get_item_pos(get_node_tag(self._active_clip, from_obj))
-        dpg.set_item_pos(get_node_tag(self._active_clip, to_obj), from_pos)
+    def copy_node_position(self, from_clip, from_obj, to_clip, to_obj):
+        from_pos = dpg.get_item_pos(get_node_tag(from_clip, from_obj))
+        dpg.set_item_pos(get_node_tag(to_clip, to_obj), from_pos)
 
     def copy_selected(self):
         window_tag_alias = dpg.get_item_alias(dpg.get_active_window())
@@ -2358,7 +2369,7 @@ class Gui:
                     success, new_input_channel = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
                     if success:
                         self.add_input_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_input_channel), False))
-                        self.copy_node_position(self._active_clip, obj, new_input_channel)
+                        self.copy_node_position(self._active_clip, obj, self._active_clip, new_input_channel)
                         duplicate_map[obj.id] = new_input_channel
                     else:
                         raise RuntimeError(f"Failed to duplicate {obj.id}")
@@ -2369,7 +2380,7 @@ class Gui:
                             self.add_custom_function_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_node), False))
                         else:
                             self.add_function_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_node), False))
-                        self.copy_node_position(self._active_clip, obj, new_node)
+                        self.copy_node_position(self._active_clip, obj, self._active_clip, new_node)
                         duplicate_map[obj.id] = new_node
                         for i, input_channel in enumerate(obj.inputs):
                             duplicate_map[input_channel.id] = new_node.inputs[i]
@@ -2398,18 +2409,30 @@ class Gui:
                 self.paste_clip(self._active_clip_slot[0], self._active_clip_slot[1])
 
     def paste_clip(self, track_i, clip_i):
+        # TODO: Prevent copy/pasting clips across different tracks (outputs wont match)
         if not self.copy_buffer:
             return
+
         obj = self.copy_buffer[0]
         if not isinstance(obj, model.Clip):
             return
 
-        clip_id = obj.id
+        clip = obj
+        clip_id = clip.id
         success, new_clip = self.execute_wrapper(f"duplicate_clip {track_i} {clip_i} {clip_id} ")
         if success:
             self.populate_clip_slot(track_i, clip_i)
         else:
             raise RuntimeError(f"Failed to duplicate clip {clip_id}")
+
+        for i, old_channel in enumerate(clip.inputs):
+            self.copy_node_position(clip, old_channel, new_clip, new_clip.inputs[i])
+
+        for i, old_channel in enumerate(clip.outputs):
+            self.copy_node_position(clip, old_channel, new_clip, new_clip.outputs[i])
+
+        for i, old_node in enumerate(clip.node_collection.nodes):
+            self.copy_node_position(clip, old_node, new_clip, new_clip.node_collection.nodes[i])
 
         self.save_last_active_clip()
         self._active_track = self.state.tracks[track_i]
