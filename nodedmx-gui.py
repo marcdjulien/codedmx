@@ -2309,6 +2309,10 @@ class Gui:
             link_key = alias.replace(".gui.link", "")
             self._delete_link(alias, link_key, self._active_clip)
 
+    def copy_node_position(self, clip, from_obj, to_obj):
+        from_pos = dpg.get_item_pos(get_node_tag(self._active_clip, from_obj))
+        dpg.set_item_pos(get_node_tag(self._active_clip, to_obj), from_pos)
+
     def copy_selected(self):
         window_tag_alias = dpg.get_item_alias(dpg.get_active_window())
         if window_tag_alias is None:
@@ -2320,9 +2324,10 @@ class Gui:
             for item in dpg.get_selected_nodes(node_editor_tag):                    
                 alias = dpg.get_item_alias(item)
                 item_id = alias.replace(".node", "").rsplit(".", 1)[-1]
-                if item_id.startswith("DmxOutput"):
+                obj = self.state.get_obj(item_id)
+                if isinstance(obj, (model.DmxOutputGroup, model.DmxOutput)):
                     continue
-                new_copy_buffer.append(item_id)
+                new_copy_buffer.append(obj)
             for item in dpg.get_selected_links(node_editor_tag):
                 alias = dpg.get_item_alias(item)
                 link_key = alias.replace(".gui.link", "")
@@ -2345,41 +2350,37 @@ class Gui:
         if window_tag_alias.endswith("node_window"):
             # First add any nodes
             duplicate_map = {}
-            new_objs = {}
             link_ids = []
-            for item_id in self.copy_buffer:
-                obj = self.state.get_obj(item_id, missing_ok=True)
-                if obj is None:
-                    link_ids.append(item_id)
+            for obj in self.copy_buffer:
+                if isinstance(obj, str):
+                    link_ids.append(obj)
                 elif isinstance(obj, model.ClipInputChannel):
-                    success, new_input_channel = self.execute_wrapper(f"duplicate_input {self._active_clip.id} {item_id}")
+                    success, new_input_channel = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
                     if success:
                         self.add_input_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_input_channel), False))
-                        duplicate_map[item_id] = new_input_channel
-                        new_objs[new_input_channel.id] = new_input_channel
+                        self.copy_node_position(self._active_clip, obj, new_input_channel)
+                        duplicate_map[obj.id] = new_input_channel
                     else:
-                        raise RuntimeError(f"Failed to duplicate {item_id}")
+                        raise RuntimeError(f"Failed to duplicate {obj.id}")
                 elif isinstance(obj, model.FunctionNode):
-                    success, new_node, id_to_ptrs = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {item_id}")
+                    success, new_node = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
                     if success:
                         if isinstance(obj, model.FunctionCustomNode):
                             self.add_custom_function_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_node), False))
                         else:
                             self.add_function_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_node), False))
-                        duplicate_map[item_id] = new_node
-                        new_objs[new_node.id] = new_node
+                        self.copy_node_position(self._active_clip, obj, new_node)
+                        duplicate_map[obj.id] = new_node
                         for i, input_channel in enumerate(obj.inputs):
                             duplicate_map[input_channel.id] = new_node.inputs[i]
-                            new_objs[input_channel.id] = input_channel
                         for i, output_channel in enumerate(obj.outputs):
                             duplicate_map[output_channel.id] = new_node.outputs[i]                         
-                            new_objs[output_channel.id] = output_channel
                     else:
                        raise RuntimeError("Failed to duplicate_node")
                 else:
-                        raise RuntimeError(f"Failed to duplicate {item_id}")
+                        raise RuntimeError(f"Failed to duplicate {obj.id}")
             
-            # First replace old ids with new ids in selected links
+            # Then replace old ids with new ids in selected links
             new_link_ids = []
             for link_id in link_ids:   
                 new_link_id = link_id

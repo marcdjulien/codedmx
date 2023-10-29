@@ -23,7 +23,7 @@ def clamp(x, min_value, max_value):
 MAX_VALUES = {
     "bool": 1,
     "int": 255,
-    "float": 100.0,
+    "float": 255.0,
 }
 
 TYPES = ["bool", "int", "float", "array", "any"]
@@ -68,12 +68,12 @@ def new_ids(data):
     string_data = json.dumps(data)
     obj_ids = re.findall(rf"(\w+\[{uuid_pattern}\])", string_data)
     if not obj_ids:
-        return None
+        return json.loads(string_data)
     obj_ids = set(obj_ids)
     for old_id in obj_ids:
         match2 = re.match(rf"(\w+)\[{uuid_pattern}\]", old_id)
         if not match2:
-            return None
+            raise Exception("Failed to replace ids")
         class_name = match2.groups()[0]
         if class_name in NOT_COPYABLE:
             continue
@@ -348,7 +348,7 @@ class ClipInputChannel(Parameterized):
             "input_type": self.input_type,
             "mode": self.mode,
             "active_automation": self.active_automation.id if self.active_automation else None,
-            "automations": [automation.serialize() for automation in self.automations],
+            "automations": [automation.serialize() for automation in self.automations if not automation.deleted],
             "speed": self.speed,
         })
         
@@ -517,7 +517,7 @@ class ChannelLink(Identifier):
 
 class FunctionNode(Parameterized):
 
-    def __init__(self, args, name=""):
+    def __init__(self, args="", name=""):
         super().__init__()
         self.name = name
         self.inputs: Channel = []
@@ -549,6 +549,11 @@ class FunctionNode(Parameterized):
         self.name = data["name"]
         self.type = data["type"]
         self.args = data["args"]
+
+        # Some nodes create their inputs/outputs dynamically
+        # Ensure the size is correct before deerializing.
+        self.inputs = [None] * len(data["inputs"])
+        self.outputs = [None] * len(data["outputs"])
         for i, input_data in enumerate(data["inputs"]):
             channel = Channel()
             channel.deserialize(input_data)
@@ -559,18 +564,10 @@ class FunctionNode(Parameterized):
             self.outputs[i] = channel
 
 
-class FunctionDeleted(FunctionNode):
-    nice_title = "Deleted"
-
-    def __init__(self, name):
-        super().__init__(name)
-        self.deleted = True
-
-
 class FunctionCustomNode(FunctionNode):
     nice_title = "Custom"
 
-    def __init__(self, args, name="Custom"):
+    def __init__(self, args="", name="Custom"):
         super().__init__(args, name)
         self.name = name
         self.n_in_parameter = Parameter("n_inputs", 0)
@@ -663,7 +660,7 @@ class FunctionCustomNode(FunctionNode):
 class FunctionBinaryOperator(FunctionNode):
     nice_title = "Binary Operator"
 
-    def __init__(self, args, name="Operator"):
+    def __init__(self, args="", name="Operator"):
         super().__init__(args, name)
         self.op_parameter = Parameter("op")
         self.add_parameter(self.op_parameter)
@@ -702,7 +699,7 @@ class FunctionBinaryOperator(FunctionNode):
 class FunctionScale(FunctionNode):
     nice_title = "Scale"
 
-    def __init__(self, args, name="Scale"):
+    def __init__(self, args="", name="Scale"):
         super().__init__(name)
         self.in_min_parameter = Parameter("in.min", 0)
         self.in_max_parameter = Parameter("in.max", 255)
@@ -747,7 +744,7 @@ class FunctionDemux(FunctionNode):
         "array": [],
     }
 
-    def __init__(self, args, name="Demux"):
+    def __init__(self, args="0", name="Demux"):
         super().__init__(args, name)
         self.n = int(args)
         self.parameters = []
@@ -779,7 +776,7 @@ class FunctionDemux(FunctionNode):
 class FunctionMultiplexer(FunctionNode):
     nice_title = "Multiplexer"
 
-    def __init__(self, args, name="Multiplexer"):
+    def __init__(self, args="0", name="Multiplexer"):
         super().__init__(args, name)
         self.n = int(args)
         self.inputs = [
@@ -800,7 +797,7 @@ class FunctionMultiplexer(FunctionNode):
 class FunctionPassthrough(FunctionNode):
     nice_title = "Passthrough"
 
-    def __init__(self, args, name="Passthrough"):
+    def __init__(self, args="", name="Passthrough"):
         super().__init__(args, name)
         self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
         self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
@@ -839,7 +836,7 @@ class FunctionTimeBeats(FunctionNode):
 class FunctionChanging(FunctionNode):
     nice_title = "Changing"
 
-    def __init__(self, args, name="Changing"):
+    def __init__(self, args="", name="Changing"):
         super().__init__(args, name)
         self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
         self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
@@ -862,7 +859,7 @@ class FunctionChanging(FunctionNode):
 class FunctionToggleOnChange(FunctionNode):
     nice_title = "Toggle On Change"
 
-    def __init__(self, args, name="ToggleOnChange"):
+    def __init__(self, args="", name="ToggleOnChange"):
         super().__init__(args, name)
         self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
         self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
@@ -888,7 +885,7 @@ class FunctionToggleOnChange(FunctionNode):
 class FunctionLastChanged(FunctionNode):
     nice_title = "Last Changed"
 
-    def __init__(self, args, name="LastChanged"):
+    def __init__(self, args="0", name="LastChanged"):
         super().__init__(args, name)
         self.n = int(args)
         for i in range(self.n):
@@ -919,7 +916,7 @@ class FunctionLastChanged(FunctionNode):
 class FunctionAggregator(FunctionNode):
     nice_title = "Aggregator"
 
-    def __init__(self, args, name="Aggregator"):
+    def __init__(self, args="0", name="Aggregator"):
         super().__init__(args, name)
         self.n = int(args)
         for i in range(self.n):
@@ -936,7 +933,7 @@ class FunctionAggregator(FunctionNode):
 class FunctionSeparator(FunctionNode):
     nice_title = "Separator"
 
-    def __init__(self, args, name="Separator"):
+    def __init__(self, args="0", name="Separator"):
         super().__init__(args, name)
         self.n = int(args)
         self.inputs.append(Channel(direction="in", dtype="any", size=self.n, name=f"in{self.n}"))
@@ -954,7 +951,7 @@ class FunctionSeparator(FunctionNode):
 class FunctionRandom(FunctionNode):
     nice_title = "Random"
 
-    def __init__(self, args, name="Random"):
+    def __init__(self, args="", name="Random"):
         super().__init__(args, name)
         self.inputs = [
             Channel(direction="in", value=0, dtype="int", name=f"a"),
@@ -976,7 +973,7 @@ class FunctionRandom(FunctionNode):
 class FunctionSample(FunctionNode):
     nice_title = "Sample"
 
-    def __init__(self, args, name="Sample"):
+    def __init__(self, args="", name="Sample"):
         super().__init__(args, name)
         self.inputs = [
             Channel(direction="in", value=1, name=f"rate", dtype="float"),
@@ -1006,7 +1003,7 @@ class FunctionSample(FunctionNode):
 class FunctionBuffer(FunctionNode):
     nice_title = "Buffer"
 
-    def __init__(self, args, name="Buffer"):
+    def __init__(self, args="", name="Buffer"):
         super().__init__(args, name)
         self.n_parameter = Parameter("n", value=60)
         self.add_parameter(self.n_parameter)
@@ -1047,7 +1044,7 @@ class FunctionBuffer(FunctionNode):
 class FunctionCanvas1x8(FunctionNode):
     nice_title = "Canvas 1x8"
 
-    def __init__(self, args, name="Canvas1x8"):
+    def __init__(self, args="", name="Canvas1x8"):
         super().__init__(args, name)
         self.inputs = [
             Channel(direction="in", value=0, name="start", dtype="int"),
@@ -1084,7 +1081,7 @@ class FunctionCanvas1x8(FunctionNode):
 class FunctionPixelMover1(FunctionNode):
     nice_title = "Pixel Mover"
 
-    def __init__(self, args, name="PixelMover1"):
+    def __init__(self, args="", name="PixelMover1"):
         super().__init__(args, name)
         self.inputs = [
             Channel(direction="in", value=0, name="i1", dtype="int"),
@@ -1131,6 +1128,7 @@ class FunctionPixelMover1(FunctionNode):
         for i, value in enumerate(canvas):
             self.outputs[i].set(value)
 
+
 FUNCTION_TYPES = {
     "custom": FunctionCustomNode,
     "binary_operator": FunctionBinaryOperator,
@@ -1152,6 +1150,7 @@ FUNCTION_TYPES = {
     "pixelmover1": FunctionPixelMover1,
 }
 
+
 class NodeCollection:
     """Collection of nodes and their the a set of inputs and outputs"""
 
@@ -1161,11 +1160,6 @@ class NodeCollection:
 
 
     def add_node(self, cls, arg):
-        if cls is None:
-            none = FunctionDeleted(name="none")
-            self.nodes.append(none)
-            return
-
         n = len(self.nodes)
         node = cls(arg)
 
@@ -1224,8 +1218,8 @@ class NodeCollection:
 
     def serialize(self):
         data = {
-            "nodes": [node.serialize() for node in self.nodes],
-            "links": [link.serialize() for link in self.links],
+            "nodes": [node.serialize() for node in self.nodes if not node.deleted],
+            "links": [link.serialize() for link in self.links if not link.deleted],
         }
         return data
 
@@ -1426,8 +1420,8 @@ class Clip(Identifier):
         data.update({
             "name": self.name,
             "speed": self.speed,
-            "inputs": [channel.serialize() for channel in self.inputs],
-            "outputs": [channel.serialize() for channel in self.outputs],
+            "inputs": [channel.serialize() for channel in self.inputs if not channel.deleted],
+            "outputs": [channel.serialize() for channel in self.outputs if not channel.deleted],
             "node_collection": self.node_collection.serialize(),
         })
 
@@ -1503,6 +1497,8 @@ class Track(Identifier):
         })
 
         for output in self.outputs:
+            if output.deleted:
+                continue
             output_type = "single" if isinstance(output, DmxOutput) else "group"
             data["outputs"].append((output_type, output.serialize()))
 
@@ -1783,6 +1779,13 @@ class ProgramState(Identifier):
             new_track.deserialize(track_data)
             self.tracks[i] = new_track
 
+    def duplicate_obj(self, obj):
+        data = obj.serialize()
+        new_data = new_ids(data)
+        new_obj = obj.__class__()
+        new_obj.deserialize(new_data)
+        return new_obj
+
     def execute(self, full_command):
         global IO_OUTPUTS
         global IO_INPUTS
@@ -1979,45 +1982,20 @@ class ProgramState(Identifier):
             new_track = self.tracks[int(new_track_i)]
             new_track_ptr = f"*track[{new_track_i}]"
             old_clip = self.get_obj(clip_id)
-
-            clip_data = old_clip.serialize()
-            new_clip_data = new_ids(clip_data)
-            if new_clip_data is None:
-                return False, None
-            new_clip = Clip()
-            new_clip.deserialize(new_clip_data)
+            new_clip = self.duplicate_obj(old_clip)
             new_track[new_clip_i] = new_clip
             return True, new_clip
 
-        elif cmd == "duplicate_input":
-            clip_id = toks[1]
-            input_id = toks[2]
-            clip = self.get_obj(clip_id)
-            clip_ptr = self.get_ptr_from_clip(clip)
-            input_channel = self.get_obj(input_id)
-            
-            id_to_ptr = {}
-            new_i = len(clip.inputs)
-            data = input_channel.serialize(clip_ptr, new_i, id_to_ptr)
-            self.deserialize(data)
-            new_input_channel = clip.inputs[int(new_i)]
-            new_input_channel.name = update_name(new_input_channel.name, [obj.name for obj in clip.inputs])
-            return True, new_input_channel
-
         elif cmd == "duplicate_node":
             clip_id = toks[1]
-            node_id = toks[2]
+            obj_id = toks[2]
             clip = self.get_obj(clip_id)
-            clip_ptr = self.get_ptr_from_clip(clip)
-            node = self.get_obj(node_id)
-            
-            new_i = len(clip.node_collection.nodes)
-            id_to_ptr = {}
-            data = node.serialize(clip_ptr, new_i, id_to_ptr)
-            self.deserialize(data)
-            new_node = clip.node_collection.nodes[int(new_i)]
-            new_node.name = update_name(new_node.name, [obj.name for obj in clip.node_collection.nodes])
-            return True, new_node, id_to_ptr
+            obj = self.get_obj(obj_id)
+            new_obj = self.duplicate_obj(obj)
+            collection = clip.node_collection.nodes if isinstance(new_obj, FunctionNode) else clip.inputs
+            collection.append(new_obj)
+            new_obj.name = update_name(new_obj.name, [obj.name for obj in collection])
+            return True, new_obj
 
         elif cmd == "double_automation":
             automation_id = toks[1]
@@ -2061,7 +2039,7 @@ class ProgramState(Identifier):
                             continue
                         self.execute(f"midi_map {input_channel.id}")
 
-    def get_obj(self, id_, missing_ok=False):
+    def get_obj(self, id_):
         if id_.startswith("*"):
             return self.get_obj_ptr(id_[1::])
         else:
@@ -2069,10 +2047,7 @@ class ProgramState(Identifier):
                 return UUID_DATABASE[id_]
             except Exception as e:
                 print(UUID_DATABASE)
-                if missing_ok:
-                    return
-                else:
-                    raise
+                raise
 
     def get_obj_ptr(self, item_key):
         if item_key.startswith("state"):
