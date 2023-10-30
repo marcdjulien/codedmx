@@ -17,6 +17,15 @@ from pstats import SortKey, Stats
 import argparse
 import subprocess
 import sys
+import logging
+
+logging.basicConfig(filename="log.txt",
+                    filemode='w',
+                    format='[%(asctime)s][%(levelname)s][%(name)s] %(message)s',
+                    level=logging.DEBUG)
+
+
+logger = logging.getLogger(__name__)
 
 TOP_LEFT = (0, 18)
 SCREEN_WIDTH = 1940
@@ -141,7 +150,7 @@ class Gui:
         self.gui_lock = RLock()
     
     def warning(self, message):
-        print(f"[!] {message}")
+        logging.warning(message)
 
     def execute_wrapper(self, command):
         dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}] *")
@@ -152,7 +161,7 @@ class Gui:
         self.main_loop()
 
     def main_loop(self):
-        print("[Main Loop]")
+        logging.debug("Starting main loop")
         try:
             while dpg.is_dearpygui_running():
                 with self.gui_lock:
@@ -170,17 +179,17 @@ class Gui:
             raise
 
     def initialize(self):
+        logging.debug("Initializing")
         self.tags = {
             "hide_on_clip_selection": [],
             "node_window": [],
         }
         dpg.create_context()
-        #dpg.show_metrics()
-        #dpg.show_item_registry()
 
         self._active_track = self.state.tracks[0]
 
         #### Create Clip Window ####
+        logging.debug("Creating Clip Window")
         clip_window = dpg.window(tag="clip.gui.window", label="Clip", pos=(0,18), width=800, height=520, no_move=True, no_title_bar=True, no_resize=True)
         with clip_window as window:
             table_tag = f"clip_window.table"
@@ -230,7 +239,6 @@ class Gui:
                                     with dpg.popup(tag, mousebutton=1):
                                         dpg.add_menu_item(label="Properties", callback=show_track_output_configuration_window, user_data=track)
 
-
                 clips_per_track = len(self.state.tracks[0].clips)
                 for clip_i in range(clips_per_track):
                     # Row
@@ -262,6 +270,7 @@ class Gui:
                 self.update_clip_window()
 
         #### Mouse/Key Handlers ####
+        logging.debug("Installing mouse/key handlers")
         with dpg.handler_registry():
             dpg.add_mouse_move_handler(callback=self.mouse_move_callback)
             dpg.add_mouse_click_handler(callback=self.mouse_click_callback)
@@ -271,6 +280,7 @@ class Gui:
             dpg.add_key_release_handler(callback=self.key_release_callback)
 
         # Create Viewport
+        logging.debug("Creating Viewport")
         dpg.create_viewport(title=f"NodeDMX [{self.state.project_name}] *", width=SCREEN_WIDTH, height=SCREEN_HEIGHT, x_pos=50, y_pos=0)
 
         # File Dialogs
@@ -472,6 +482,7 @@ class Gui:
         #### Restore ###
         ################
 
+        logging.debug("Restoring program state.")
         # Need to create this after the node_editor_windows
         for track in self.state.tracks:                           
             self.create_track_output_configuration_window(track)
@@ -479,10 +490,11 @@ class Gui:
         self.create_inspector_window()
         self.create_io_window()
 
+        logging.debug("Restoring GUI state.")
+        self.restore_gui_state()
+
         dpg.setup_dearpygui()
         dpg.show_viewport()
-
-        self.restore_gui_state()
 
     def open_menu_callback(self):
         dpg.configure_item("open_file_dialog", show=True)
@@ -613,6 +625,7 @@ class Gui:
                 dpg.highlight_table_column("clip_window.table", track_i, color=[0, 0, 0, 0])
 
     def create_node_editor_window(self, clip):
+        logging.debug("Creating Node Editor Window (%s)", clip.id)
         window_tag = get_node_window_tag(clip)
         self.tags["hide_on_clip_selection"].append(window_tag)
 
@@ -664,8 +677,6 @@ class Gui:
                         clip.name = app_data
                 dpg.add_input_text(source=f"{clip.id}.name", width=75, callback=set_clip_text)
 
-
-
         ###############
         ### Restore ###
         ###############
@@ -700,6 +711,8 @@ class Gui:
         for link_index, link in enumerate(clip.node_collection.links):
             if link.deleted:
                 continue
+            logger.debug(link.src_channel)
+            logger.debug(link.dst_channel)
             self.add_link_callback(sender=None, app_data=None, user_data=("restore", clip, link.src_channel, link.dst_channel))
 
 
@@ -771,6 +784,9 @@ class Gui:
             dpg.add_menu_item(
                 label="Random", user_data=("create", ("random", None, clip), right_click_menu), callback=self.add_function_node
             )           
+            dpg.add_menu_item(
+                label="Sequencer", user_data=("create", ("sequencer", None, clip), right_click_menu), callback=self.add_function_node
+            )  
             dpg.add_menu_item(
                 label="Scale", user_data=("create", ("scale", None, clip), right_click_menu), callback=self.add_function_node
             )     
@@ -876,7 +892,6 @@ class Gui:
                         decimal=True,
                     )
 
-
             for parameter_index, parameter in enumerate(parameters):
                 if parameter.name in ["min", "max"]:
                     continue
@@ -890,7 +905,6 @@ class Gui:
                         default_value=parameter.value if parameter.value is not None else "",
                         on_enter=True,
                     )
-
 
             with dpg.node_attribute(tag=get_node_attribute_tag(clip, input_channel), attribute_type=dpg.mvNode_Attr_Output):
                 # Input Knob
@@ -932,7 +946,6 @@ class Gui:
             dpg.bind_item_handler_registry(node_tag, handler_registry_tag)
 
             self.create_properties_window(clip, input_channel)
-
             self.update_io_matrix_window(clip)
 
     @gui_lock_callback
@@ -970,15 +983,25 @@ class Gui:
 
             for parameter_index, parameter in enumerate(parameters):
                 with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
-                    dpg.add_input_text(
-                        label=parameter.name, 
-                        tag=f"{parameter.id}.value",
-                        callback=self.update_parameter, 
-                        user_data=(node, parameter_index), 
-                        width=70,
-                        default_value=parameter.value if parameter.value is not None else "",
-                        on_enter=True,
-                    )
+                    if parameter.dtype == "bool":
+                        dpg.add_checkbox(
+                            label=parameter.name, 
+                            tag=f"{parameter.id}.value",
+                            callback=self.update_parameter, 
+                            user_data=(node, parameter_index), 
+                            default_value=parameter.value
+                        )
+                    else:
+                        dpg.add_input_text(
+                            label=parameter.name, 
+                            tag=f"{parameter.id}.value",
+                            callback=self.update_parameter, 
+                            user_data=(node, parameter_index), 
+                            width=70,
+                            default_value=parameter.value if parameter.value is not None else "",
+                            on_enter=True,
+                        )
+
 
             for input_index, input_channel in enumerate(input_channels):
                 with dpg.node_attribute(tag=get_node_attribute_tag(clip, input_channel)):
@@ -1008,7 +1031,7 @@ class Gui:
                         dpg.add_input_text(tag=f"{output_channel.id}.value", readonly=True, width=100)
                     elif output_channel.size == 1:
                         add_func = dpg.add_input_float if output_channel.dtype == "float" else dpg.add_input_int
-                        add_func(label=output_channel.name, tag=f"{output_channel.id}.value", width=90)
+                        add_func(label=output_channel.name, tag=f"{output_channel.id}.value", width=90, step=0, readonly=True)
                     else:
                         add_func = dpg.add_drag_floatx 
                         add_func(label=output_channel.name, tag=f"{output_channel.id}.value", width=90, size=output_channel.size)
@@ -1216,7 +1239,7 @@ class Gui:
 
     def update_parameter_buffer_callback(self, sender, app_data, user_data):
         parameter, parameter_index = user_data
-        if app_data:
+        if app_data is not None:
             self._properties_buffer["parameters"][parameter] = (parameter_index, app_data)
 
     def update_attr_buffer_callback(self, sender, app_data, user_data):
@@ -1273,12 +1296,20 @@ class Gui:
                     for parameter_index, parameter in enumerate(obj.parameters):
                         with dpg.table_row():
                             dpg.add_text(default_value=parameter.name)
-                            dpg.add_input_text(
-                                source=f"{parameter.id}.value",
-                                callback=self.update_parameter_buffer_callback, 
-                                user_data=(parameter, parameter_index),
-                                default_value=parameter.value if parameter.value is not None else "",
-                            )
+                            if parameter.dtype == "bool":
+                                dpg.add_checkbox(
+                                    source=f"{parameter.id}.value",
+                                    callback=self.update_parameter_buffer_callback, 
+                                    user_data=(parameter, parameter_index),
+                                    default_value=parameter.value,
+                                )
+                            else:                                
+                                dpg.add_input_text(
+                                    source=f"{parameter.id}.value",
+                                    callback=self.update_parameter_buffer_callback, 
+                                    user_data=(parameter, parameter_index),
+                                    default_value=parameter.value if parameter.value is not None else "",
+                                )
 
                 with dpg.table_row():
                     dpg.add_table_cell()
@@ -1472,6 +1503,7 @@ class Gui:
                                     dpg.add_menu_item(label=dst_channel.name, callback=connect_node_and_hide_window, user_data=(clip, src, [dst_channel]))
 
 
+
         with dpg.popup(parent=node_tag, tag=f"{node_tag}.popup", mousebutton=1):
             dpg.add_menu_item(label="Properties", callback=show_properties_window, user_data=obj)
             if isinstance(obj, (model.FunctionNode, model.ClipInputChannel)):
@@ -1480,7 +1512,7 @@ class Gui:
                 dpg.add_menu_item(label="Save", callback=save_custom_node, user_data=obj)
             if isinstance(obj, model.MidiInput):
                 dpg.add_menu_item(label="Update Map MIDI", callback=self.update_midi_map_node, user_data=obj)
-                dpg.add_menu_item(label="Learn Map MIDI", callback=self.learn_midi_map_node, user_data=obj)
+                dpg.add_menu_item(label="Learn Map MIDI", callback=self.learn_midi_map_node, user_data=(obj, "input"))
 
                 def unmap_midi(sender, app_data, user_data):
                     obj = user_data
@@ -1491,6 +1523,7 @@ class Gui:
                         dpg.set_value(f"{device_parameter_id}.value", obj.get_parameter("device").value)
                         dpg.set_value(f"{id_parameter_id}.value", obj.get_parameter("id").value)
                 dpg.add_menu_item(label="Unmap MIDI", callback=unmap_midi, user_data=obj)
+            dpg.add_menu_item(label="Map MIDI Output", callback=self.learn_midi_map_node, user_data=(obj, "output"))
             if isinstance(obj, (model.FunctionNode, model.ClipInputChannel)):
                 dpg.add_menu_item(label="Delete", callback=self.delete_selected_nodes)
 
@@ -1498,7 +1531,7 @@ class Gui:
         self.execute_wrapper(f"midi_map {user_data.id}")
 
     def learn_midi_map_node(self, sender, app_data, user_data):
-        obj = user_data
+        obj, inout = user_data
         try:
             dpg.delete_item("midi_map_window")
         except:
@@ -1512,15 +1545,27 @@ class Gui:
             if model.LAST_MIDI_MESSAGE is not None:
                 device_name, message = model.LAST_MIDI_MESSAGE
                 note_control = message.control if message.is_cc() else message.note
-                self.update_parameter_by_name(obj, "device", device_name)
-                self.update_parameter_by_name(obj, "id", f"{message.channel}/{note_control}")
-                success = self.execute_wrapper(f"midi_map {obj.id}")
-                if success:
-                    device_parameter_id = obj.get_parameter_id("device")
-                    id_parameter_id = obj.get_parameter_id("id")
-                    dpg.set_value(f"{device_parameter_id}.value", obj.get_parameter("device").value)
-                    dpg.set_value(f"{id_parameter_id}.value", obj.get_parameter("id").value)
-                    dpg.delete_item("midi_map_window")
+                if inout == "input":
+                    self.update_parameter_by_name(obj, "device", device_name)
+                    self.update_parameter_by_name(obj, "id", f"{message.channel}/{note_control}")
+                    success = self.execute_wrapper(f"midi_map {obj.id}")
+                    if success:
+                        device_parameter_id = obj.get_parameter_id("device")
+                        id_parameter_id = obj.get_parameter_id("id")
+                        dpg.set_value(f"{device_parameter_id}.value", obj.get_parameter("device").value)
+                        dpg.set_value(f"{id_parameter_id}.value", obj.get_parameter("id").value)
+                        dpg.delete_item("midi_map_window")
+                else: #output
+                    input_midi_device_name = device_name
+                    while input_midi_device_name:
+                        for i, output_device in model.MIDI_OUTPUT_DEVICES.items():
+                            if output_device.device_name.startswith(input_midi_device_name):
+                                output_device.map_channel(message.channel, note_control, obj.outputs[0])
+                                print(f"Mapping {(message.channel, note_control)} to {output_device.device_name}")
+                                dpg.delete_item("midi_map_window")
+                                return
+                        input_midi_device_name = input_midi_device_name[:-2]
+                    self.warning(f"Failed to find corresponding output MIDI device for {input_midi_device_name}")
 
         dpg.set_value("last_midi_message", "")
 
@@ -1530,7 +1575,7 @@ class Gui:
             dpg.add_button(label="Save", callback=save, user_data=obj)
 
     def update_parameter(self, sender, app_data, user_data):
-        if app_data:
+        if app_data is not None:
             obj, parameter_index = user_data
             success, _ = self.execute_wrapper(f"update_parameter {obj.id} {parameter_index} {app_data}")
             if not success:
@@ -2044,7 +2089,7 @@ class Gui:
                 devices = mido.get_input_names() if in_out == "inputs" else mido.get_output_names() 
                 with dpg.window(tag="midi_devices_window", no_title_bar=True, max_size=(200, 400), pos=(self.mouse_x, self.mouse_y)):
                     for device_name in devices:
-                        dpg.add_menu_item(label=device_name, callback=hide_midi_menu_and_set_io_type, user_data=(i, model.MidiDevice, in_out, device_name))
+                        dpg.add_menu_item(label=device_name, callback=hide_midi_menu_and_set_io_type, user_data=(i, model.MidiInputDevice if in_out == "inputs" else model.MidiOutputDevice, in_out, device_name))
 
             with dpg.table(header_row=True, tag=input_table_tag):
                 type_column_tag = f"{input_table_tag}.column.type"
@@ -2060,7 +2105,7 @@ class Gui:
                         dpg.add_button(label="Select Input Type" if input_type is None else input_type.nice_title, tag=type_tag)
                         with dpg.popup(dpg.last_item(), mousebutton=0):
                             for io_input_type in model.ALL_INPUT_TYPES:
-                                if io_input_type.type == "midi":
+                                if io_input_type.type == "midi_input":
                                     dpg.add_menu_item(label=io_input_type.nice_title, callback=create_and_show_midi_menu, user_data=(i, "inputs"))
                                 else:
                                     dpg.add_menu_item(label=io_input_type.nice_title, callback=set_io_type, user_data=(i, io_input_type, "inputs"))
@@ -2084,7 +2129,7 @@ class Gui:
                         dpg.add_button(label="Select Output Type" if model.IO_OUTPUTS[i] is None else model.IO_OUTPUTS[i].nice_title, tag=type_tag)
                         with dpg.popup(dpg.last_item(), mousebutton=0):
                             for io_output_type in model.ALL_OUTPUT_TYPES:
-                                if io_output_type.type == "midi":
+                                if io_output_type.type == "midi_output":
                                     dpg.add_menu_item(label=io_output_type.nice_title, callback=create_and_show_midi_menu, user_data=(i, "outputs"))
                                 else:
                                     dpg.add_menu_item(label=io_output_type.nice_title, callback=set_io_type, user_data=(i, io_output_type, "outputs"))
@@ -2732,7 +2777,6 @@ class Gui:
                 if self._last_add_function_node is not None:
                     self.add_function_node(*self._last_add_function_node)
 
-
     def key_down_callback(self, sender, app_data, user_data):
         keys = app_data
         if not isinstance(app_data, list):
@@ -2829,9 +2873,6 @@ class Gui:
             "inputs": {},
             "outputs": {},
         }
-        for inout in ["inputs", "outputs"]:
-            for index, io_type in self.gui_state["io_types"][inout].items():
-                io_type_data[inout][index] = io_type.__name__
 
         io_arg_data = {
             "inputs": {},
@@ -2844,6 +2885,7 @@ class Gui:
 
         gui_data = self.gui_state.copy()
         gui_data.update({
+            "node_positions": node_positions,
             "io_types": io_type_data,
             "io_args": io_arg_data,
         })
@@ -2894,10 +2936,11 @@ if __name__ == "__main__":
     gui = Gui()
 
     if args.project_filepath:
+        logging.debug("Opening %s", args.project_filepath)
         with open(args.project_filepath, 'r') as f:
             data = json.load(f)
             gui.deserialize(data)
 
     gui.run()
-    print("[Done]")
+    logging.info("Exiting.")
 

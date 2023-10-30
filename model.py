@@ -159,10 +159,11 @@ class Channel(Identifier):
 
 
 class Parameter(Identifier):
-    def __init__(self, name="", value=None):
+    def __init__(self, name="", value=None, dtype="any"):
         super().__init__()
         self.name = name
         self.value = value
+        self.dtype = dtype
 
     def serialize(self):
         data = super().serialize()
@@ -176,6 +177,7 @@ class Parameter(Identifier):
         super().deserialize(data)
         self.name = data["name"]
         self.value = data["value"]
+
 
 
 class Parameterized(Identifier):
@@ -692,6 +694,60 @@ class FunctionBinaryOperator(FunctionNode):
         else:
             return super().update_parameter(index, value)
 
+
+class FunctionSequencer(FunctionNode):
+    nice_title = "Sequencer"
+
+    def __init__(self, args="", name="Sequencer"):
+        super().__init__(args, name)
+        self.steps_parameter = Parameter("Steps", 4)
+        self.step_length_parameter = Parameter("Step Legnth", 1)
+        self.add_parameter(self.steps_parameter)
+        self.add_parameter(self.step_length_parameter)
+        self.inputs = [
+            Channel(direction="in", value=0, name=f"beat"), 
+            Channel(direction="in", dtype="any", size=4, name=f"seq"), 
+        ]
+        self.outputs = [
+            Channel(direction="out", value=0, name=f"on")
+        ]
+        self.type = "sequencer"
+
+    def transform(self):
+        beat = self.inputs[0].get()
+        seq = self.inputs[1].get()
+        steps = self.steps_parameter.value
+        step_length = self.step_length_parameter.value * 4
+
+        step_n = int(((beat // step_length) - 1) % steps)
+
+        if step_n <= len(seq):
+            self.outputs[0].set(seq[step_n])
+
+    def update_parameter(self, index, value):
+        if self.parameters[index] == self.steps_parameter:
+            if value.isnumeric():
+                self.parameters[index].value = int(value)
+            else:
+                return False, None
+            return True, None
+        elif self.parameters[index] == self.step_length_parameter:
+            if value.isnumeric():
+                value = int(value)
+            else:
+                if "/" in value:
+                    try:
+                        numerator, denom = value.split("/")
+                        value = float(numerator)/float(denom)
+                    except Exception as e:
+                        return False, None
+                else:
+                    return False, None
+            self.parameters[index].value = value
+            return True, None
+        else:
+            return super().update_parameter(index, value)
+
 class FunctionScale(FunctionNode):
     nice_title = "Scale"
 
@@ -806,27 +862,29 @@ class FunctionPassthrough(FunctionNode):
 class FunctionTimeSeconds(FunctionNode):
     nice_title = "Seconds"
 
-    def __init__(self, time_func, name="Seconds"):
+    def __init__(self, args="", name="Seconds"):
         super().__init__(args, name)
         self.outputs.append(Channel(direction="out", dtype="float", name="s"))
         self.type = "time_s"
-        self.time_func = time_func
 
     def transform(self):
-        self.outputs[0].set(self.time_func())
+        global _STATE
+        self.outputs[0].set(_STATE.time_since_start_s)
 
 
 class FunctionTimeBeats(FunctionNode):
     nice_title = "Beats"
 
-    def __init__(self, time_func, name="Beats"):
+    def __init__(self, args="", name="Beats"):
         super().__init__(args, name)
         self.outputs.append(Channel(direction="out", dtype="float", name="beat"))
         self.type = "time_beat"
-        self.time_func = time_func
 
     def transform(self):
-        self.outputs[0].set(self.time_func())
+        global _STATE
+        self.outputs[0].set(_STATE.time_since_start_beat + 1)
+
+
 
 
 class FunctionChanging(FunctionNode):
@@ -857,6 +915,8 @@ class FunctionToggleOnChange(FunctionNode):
 
     def __init__(self, args="", name="ToggleOnChange"):
         super().__init__(args, name)
+        self.rising_only_parameter = Parameter("Rising", False, dtype="bool")
+        self.add_parameter(self.rising_only_parameter)
         self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
         self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
         self.type = "toggle_on_change"
@@ -865,18 +925,28 @@ class FunctionToggleOnChange(FunctionNode):
 
     def transform(self):
         changing = False
+        rising_only = self.rising_only_parameter.value
         new_value = self.inputs[0].get()
         if isinstance(new_value, (list)):
             changing = tuple(new_value) == self._last_value
             self._last_value = tuple(new_value)
         else:
             changing = self._last_value != new_value
+            if changing and rising_only:
+                changing = new_value
             self._last_value = new_value
 
         if changing:
             self._toggle_value = int(not self._toggle_value)
         self.outputs[0].set(self._toggle_value)
         
+    def update_parameter(self, index, value):
+        if self.parameters[index] == self.rising_only_parameter:
+            self.parameters[index].value = value.lower() == "true"
+            return True, None
+        else:
+            return super().update_parameter(index, value)
+
 
 class FunctionLastChanged(FunctionNode):
     nice_title = "Last Changed"
@@ -1129,6 +1199,7 @@ FUNCTION_TYPES = {
     "custom": FunctionCustomNode,
     "binary_operator": FunctionBinaryOperator,
     "scale": FunctionScale,
+    "sequencer": FunctionSequencer,
     "demux": FunctionDemux,
     "multiplexer": FunctionMultiplexer,
     "passthrough": FunctionPassthrough,
@@ -1170,8 +1241,6 @@ class NodeCollection:
                 continue
             if link.dst_channel == dst_channel:
                 return False
-        if src_channel.size != dst_channel.size:
-            return False
         link = ChannelLink(src_channel, dst_channel)
         self.links.append(link)
         return True
@@ -1465,11 +1534,17 @@ class Track(Identifier):
     def create_output(self, address):
         new_output = DmxOutput(address)
         self.outputs.append(new_output)
+        for clip in self.clips:
+            if clip is not None:
+                clip.outputs = self.outputs
         return new_output
 
     def create_output_group(self, address, channel_names):
         new_output_group = DmxOutputGroup(channel_names, address)
         self.outputs.append(new_output_group)
+        for clip in self.clips:
+            if clip is not None:
+                clip.outputs = self.outputs
         return new_output_group
 
     def __delitem__(self, key):
@@ -1548,7 +1623,15 @@ class EthernetDmxOutput(IO):
         for output_channel in outputs:
             if output_channel.deleted:
                 continue
-            self.dmx_frame[output_channel.dmx_address-1] = min(255, max(0, int(round(output_channel.get()))))
+
+            channels = []
+            if isinstance(output_channel, DmxOutputGroup):
+                channels.extend(output_channel.outputs)
+            else:
+                channels = [output_channel]
+
+            for channel in channels:
+                self.dmx_frame[channel.dmx_address-1] = min(255, max(0, int(round(channel.get()))))
 
         try:
             self.dmx_connection.set_channels(1, self.dmx_frame)
@@ -1598,58 +1681,17 @@ class OscServerInput(IO):
         return f"OscServer"
 
 
-class MidiDevice(IO):
-    nice_title = "MIDI"
+class MidiInputDevice(IO):
+    nice_title = "MIDI (Input)"
     arg_template = "name"
-    type = "midi"
+    type = "midi_input"
 
     def __init__(self, device_name):
         super().__init__(arg_string=device_name)
         self.device_name = device_name
-        self.is_input = device_name in mido.get_input_names()
-        if self.is_input:
-            self.port = mido.open_input(device_name, callback=self.callback)
-        else:
-            self.port = mido.open_output(device_name)
-
+        assert device_name in mido.get_input_names()
+        self.port = mido.open_input(device_name, callback=self.callback)
         self.channel_map = defaultdict(lambda: defaultdict(list))
-
-        # TODO: Confgure via GUI
-        if not self.is_input:
-            self.port.reset()
-
-    def update(self, _):
-        # TODO: Make Customizable
-        white = 3
-        pink = 53
-        orange = 60
-        yellow = 96
-        green = 17
-        light_blue = 41
-        dark_blue = 45
-        red = 5
-        if not self.is_input:
-            out_map = [
-                (0, 0, green),
-                (0, 8, yellow),
-                (0, 16, orange),
-                (0, 24, red),
-                (0, 32, white),
-                (0, 33, dark_blue),
-                (0, 25, light_blue),
-                (0, 17, pink),
-
-                (0, 2, green),
-                (0, 10, yellow),
-                (0, 18, orange),
-                (0, 26, red),
-                (0, 34, white),
-                (0, 35, dark_blue),
-                (0, 27, light_blue),
-                (0, 19, pink),
-            ]
-            for channel, note_control, value in out_map:
-                self.port.send(mido.Message("note_on", channel=channel, note=note_control, velocity=value))
 
     def map_channel(self, midi_channel, note_control, channel):
         global_unmap_midi(channel)
@@ -1672,10 +1714,33 @@ class MidiDevice(IO):
             value = message.value
         else:
             note_control = message.note
-            value = 255 if message.type == "note_on" else 0
+            value = 255 if message.velocity > 1 else 0
         if midi_channel in self.channel_map and note_control in self.channel_map[midi_channel]:
             for channel in self.channel_map[midi_channel][note_control]:
                 channel.ext_set(value)
+
+
+class MidiOutputDevice(IO):
+    nice_title = "MIDI (Output)"
+    arg_template = "name"
+    type = "midi_output"
+
+    def __init__(self, device_name):
+        super().__init__(arg_string=device_name)
+        self.device_name = device_name
+        assert device_name in mido.get_output_names()
+        self.port = mido.open_output(device_name)
+        self.channel_map = {}
+        self.port.reset()
+
+    def update(self, _):
+        for (midi_channel, note_control), channel in self.channel_map.items():
+            value = channel.get()
+            value = clamp(int(value), 0, 127)
+            self.port.send(mido.Message("note_on", channel=midi_channel, note=note_control, velocity=value))
+
+    def map_channel(self, midi_channel, note_control, channel):
+        self.channel_map[(midi_channel, note_control)] = channel
 
 
 IO_OUTPUTS = [None] * 5
@@ -1710,6 +1775,8 @@ class ProgramState(Identifier):
     ]
     
     def __init__(self):
+        global _STATE
+        _STATE = self
         super().__init__()
         self.mode = "edit"
         self.project_name = "Untitled"
@@ -1960,11 +2027,15 @@ class ProgramState(Identifier):
                     # TODO: Only allow one
                     IO_LIST[index].start(int(args))
                     return True, IO_LIST[index]
-                elif io_type == "midi":
-                    IO_LIST[index] = MidiDevice(args)
+                elif io_type == "midi_input":
+                    IO_LIST[index] = MidiInputDevice(args)
                     MIDI_LIST[args] = IO_LIST[index]
                     self._map_all_midi_inputs()
                     self._map_all_midi_inputs()
+                    return True, IO_LIST[index]
+                elif io_type == "midi_output":
+                    IO_LIST[index] = MidiOutputDevice(args)
+                    MIDI_LIST[args] = IO_LIST[index]
                     return True, IO_LIST[index]
             except Exception as e:
                 print(e)
@@ -2131,15 +2202,17 @@ class ProgramState(Identifier):
 IO_TYPES = {
     "ethernet_dmx": EthernetDmxOutput,
     "osc_server": OscServerInput,
-    "midi": MidiDevice,
+    "midi_input": MidiInputDevice,
+    "midi_output": MidiOutputDevice,
 }
 
 ALL_INPUT_TYPES = [
     OscServerInput,
-    MidiDevice,
+    MidiInputDevice,
 ]
 ALL_OUTPUT_TYPES = [
     EthernetDmxOutput,
-    MidiDevice,
+    MidiOutputDevice,
 ]
 
+_STATE = None
