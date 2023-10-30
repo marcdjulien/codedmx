@@ -14,6 +14,9 @@ from collections import defaultdict
 import json
 from cProfile import Profile
 from pstats import SortKey, Stats
+import argparse
+import subprocess
+import sys
 
 TOP_LEFT = (0, 18)
 SCREEN_WIDTH = 1940
@@ -41,7 +44,6 @@ def valid(*objs):
 
 class GuiState:
     def __init__(self):
-        self.node_positions = {}
         self.io_types = {
             "inputs": {},
             "outputs": {},
@@ -50,7 +52,6 @@ class GuiState:
             "inputs": {},
             "outputs": {},
         }
-        self.axis_limits = {}
         self.track_last_active_clip = {}
         self.point_tags = []
 
@@ -96,11 +97,20 @@ class Gui:
     def __init__(self):
         self.tags = {}
         
-        self.state = None
-        self.new_state = None
-        
-        self.gui_state = None
-        self.new_gui_state = None
+        self.state = model.ProgramState()
+        self.gui_state = {
+            "node_positions": {},
+            "io_types": {
+                "inputs": {0: model.IO_INPUTS[0].__class__},
+                "outputs": {},
+            },
+            "io_args": {
+                "inputs": {},
+                "outputs": {},
+            },
+            "track_last_active_clip": {},
+            "point_tags": [],
+        }
 
         self.mouse_x, self.mouse_y = 0, 0
         self.mouse_drag_x, self.mouse_drag_y = 0, 0
@@ -137,9 +147,29 @@ class Gui:
         dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}] *")
         return self.state.execute(command)
 
-    def run(self, state, gui_state):
-        self.state = state
-        self.gui_state = gui_state
+    def run(self):
+        self.initialize()
+        self.main_loop()
+
+    def main_loop(self):
+        print("[Main Loop]")
+        try:
+            while dpg.is_dearpygui_running():
+                with self.gui_lock:
+                    self.update_state_from_gui()
+                self.state.update()
+                with self.gui_lock:
+                    self.update_gui_from_state()
+                dpg.render_dearpygui_frame()
+            
+            dpg.destroy_context()
+        except:
+            print("\n\n\n")
+            print(model.UUID_DATABASE)
+            print([dpg.get_item_alias(item) for item in dpg.get_all_items()])
+            raise
+
+    def initialize(self):
         self.tags = {
             "hide_on_clip_selection": [],
             "node_window": [],
@@ -178,7 +208,7 @@ class Gui:
                                         dpg.configure_item(tag, show=False)
 
                                     self._active_track = user_data
-                                    last_active_clip_id = self.gui_state.track_last_active_clip.get(self._active_track.id)
+                                    last_active_clip_id = self.gui_state["track_last_active_clip"].get(self._active_track.id)
                                     if last_active_clip_id is not None:
                                         self._active_clip = self.state.get_obj(last_active_clip_id)
                                         self.select_clip_callback(None, None, (self._active_track, self._active_clip))
@@ -251,7 +281,7 @@ class Gui:
             self.save()
 
         def restore_callback(sender, app_data):
-            self.restore(app_data["file_path_name"])
+            self.open_project(app_data["file_path_name"])
 
         def save_custom_node(sender, app_data):
             if self._custom_node_to_save is None:
@@ -454,8 +484,6 @@ class Gui:
 
         self.restore_gui_state()
 
-        return self.main_loop()
-    
     def open_menu_callback(self):
         dpg.configure_item("open_file_dialog", show=True)
 
@@ -583,27 +611,6 @@ class Gui:
                 dpg.highlight_table_column("clip_window.table", track_i, color=[100, 100, 100, 255])
             else:
                 dpg.highlight_table_column("clip_window.table", track_i, color=[0, 0, 0, 0])
-
-    def main_loop(self):
-        print("Running main loop")
-        try:
-            while dpg.is_dearpygui_running():
-                with self.gui_lock:
-                    self.update_state_from_gui()
-                self.state.update()
-                with self.gui_lock:
-                    self.update_gui_from_state()
-                dpg.render_dearpygui_frame()
-            
-            dpg.destroy_context()
-        except:
-            print("\n\n\n")
-            print(model.UUID_DATABASE)
-            print([dpg.get_item_alias(item) for item in dpg.get_all_items()])
-            raise
-
-        # TODO: Close old window.
-        return self.new_state, self.new_gui_state
 
     def create_node_editor_window(self, clip):
         window_tag = get_node_window_tag(clip)
@@ -937,7 +944,7 @@ class Gui:
             node_type = args[0]
             node_args = args[1]
             clip = args[2]
-            success, node = state.execute(f"create_node {clip.id} {node_type} {node_args or ''}")
+            success, node = self.state.execute(f"create_node {clip.id} {node_type} {node_args or ''}")
             if not success:
                 return
             self._last_add_function_node = (sender, app_data, user_data)
@@ -1030,7 +1037,7 @@ class Gui:
             node_type = args[0]
             node_args = args[1]
             clip = args[2]
-            success, node = state.execute(f"create_node {clip.id} {node_type} {node_args}")
+            success, node = self.state.execute(f"create_node {clip.id} {node_type} {node_args}")
             if not success:
                 return
         else: # restore
@@ -1821,8 +1828,6 @@ class Gui:
                     dpg.add_tab_button(tag=f"{tab_bar_tag}.{automation.id}.button.x", label="X", callback=delete_preset, user_data=(input_channel, automation))
                 dpg.add_tab_button(label="+", callback=add_preset, user_data=input_channel, trailing=True)
 
-
-            
             with dpg.plot(label=input_channel.active_automation.name, height=-1, width=-1, tag=plot_tag, query=True, callback=self.print_callback, anti_aliased=True, no_menus=True):
                 min_value = input_channel.get_parameter("min").value
                 max_value = input_channel.get_parameter("max").value
@@ -1917,7 +1922,7 @@ class Gui:
         dpg.set_value(f"{window_tag}.preset_name", value=automation.name)
 
         # Delete existing points
-        for item in self.gui_state.point_tags:
+        for item in self.gui_state["point_tags"]:
             dpg.delete_item(item)
 
         # Add new points
@@ -1937,7 +1942,7 @@ class Gui:
                 thickness=10,
             )
             point_tags.append(point_tag)
-        self.gui_state.point_tags = point_tags
+        self.gui_state["point_tags"] = point_tags
 
         # Add quantization bars
         y_limits = dpg.get_axis_limits(y_axis_limits_tag)
@@ -1998,21 +2003,21 @@ class Gui:
             def set_io_type(sender, app_data, user_data):
                 index, io_type, input_output, *args = user_data
                 table_tag = f"io.{input_output}.table"
-                self.gui_state.io_types[input_output][int(index)] = io_type
+                self.gui_state["io_types"][input_output][int(index)] = io_type
                 dpg.configure_item(f"{table_tag}.{index}.type", label=io_type.nice_title)
                 dpg.set_value(f"{table_tag}.{index}.arg", value=io_type.arg_template if not args else args[0])
 
-            def add_io(sender, app_data, user_data):
+            def create_io(sender, app_data, user_data):
                 action = user_data[0]
                 if action == "create":
                     _, index, input_output = user_data
-                    io_type = self.gui_state.io_types[input_output][int(index)]
-                    success, io = state.execute(f"create_io {index} {input_output} {io_type.type} {app_data}")
+                    io_type = self.gui_state["io_types"][input_output][int(index)]
+                    success, io = self.state.execute(f"create_io {index} {input_output} {io_type.type} {app_data}")
                     
                     if not success:
                         raise RuntimeError("Failed to create IO")
 
-                    self.gui_state.io_args[input_output][index] = app_data
+                    self.gui_state["io_args"][input_output][index] = app_data
                 else: # restore
                     _, index, io = user_data
 
@@ -2023,7 +2028,7 @@ class Gui:
             def connect(sender, app_data, user_data):
                 _, index, input_output = user_data
                 table_tag = f"io.{input_output}.table"
-                add_io(sender, dpg.get_value(f"{table_tag}.{index}.arg"), user_data)
+                create_io(sender, dpg.get_value(f"{table_tag}.{index}.arg"), user_data)
 
             def hide_midi_menu_and_set_io_type(sender, app_data, user_data):
                 dpg.configure_item("midi_devices_window", show=False)
@@ -2061,7 +2066,7 @@ class Gui:
                                     dpg.add_menu_item(label=io_input_type.nice_title, callback=set_io_type, user_data=(i, io_input_type, "inputs"))
                         
                         arg_tag = f"{input_table_tag}.{i}.arg"
-                        dpg.add_input_text(default_value="", tag=arg_tag, on_enter=True, callback=add_io, user_data=("create", i, "inputs"))
+                        dpg.add_input_text(default_value="", tag=arg_tag, on_enter=True, callback=create_io, user_data=("create", i, "inputs"))
 
                         connected_tag = f"{input_table_tag}.{i}.connected"
                         dpg.add_button(label="Connect", callback=connect, user_data=("create", i, "inputs"))
@@ -2085,7 +2090,7 @@ class Gui:
                                     dpg.add_menu_item(label=io_output_type.nice_title, callback=set_io_type, user_data=(i, io_output_type, "outputs"))
 
                         arg_tag = f"{output_table_tag}.{i}.arg"
-                        dpg.add_input_text(default_value="", tag=arg_tag, on_enter=True, callback=add_io, user_data=("create", i, "outputs"))
+                        dpg.add_input_text(default_value="", tag=arg_tag, on_enter=True, callback=create_io, user_data=("create", i, "outputs"))
                         
                         connected_tag = f"{output_table_tag}.{i}.connected"
                         dpg.add_button(label="Connect", callback=connect, user_data=("create", i, "outputs"))
@@ -2149,7 +2154,7 @@ class Gui:
         track = user_data[1]
         if action == "create":
             address = user_data[2] if len(user_data) == 3   else 1
-            success, output_channel = state.execute(f"create_output {track.id} {address}")
+            success, output_channel = self.state.execute(f"create_output {track.id} {address}")
             if not success:
                 return
         else: # restore
@@ -2174,7 +2179,7 @@ class Gui:
         if action == "create":
             starting_address = user_data[2]
             channel_names = user_data[3]
-            success, output_channel_group = state.execute(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
+            success, output_channel_group = self.state.execute(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
             if not success:
                 return
         else: # restore
@@ -2799,93 +2804,100 @@ class Gui:
         return x2, y2
 
     def save(self):
+        node_positions = {}
         for track_i, track in enumerate(self.state.tracks):
-            track_ptr = f"*track[{track_i}]"
-            for clip_i, clip in enumerate(track.clips):
-                clip_ptr = f"{track_ptr}.clip[{clip_i}]"
+            for clip in track.clips:
                 if clip is None:
                     continue
-                for input_i, input_channel in enumerate(clip.inputs):
+                for input_channel in clip.inputs:
                     if not valid(input_channel):
                         continue
-                    ptr = f"{clip_ptr}.in[{input_i}]"
-                    self.gui_state.node_positions[ptr] = dpg.get_item_pos(get_node_tag(clip, input_channel))
-                    self.gui_state.axis_limits[ptr] = {}
-                    self.gui_state.axis_limits[ptr]['x'] = dpg.get_axis_limits(get_plot_tag(input_channel)+".x_axis_limits")
-                    self.gui_state.axis_limits[ptr]['y'] = dpg.get_axis_limits(get_plot_tag(input_channel)+".y_axis_limits")
-                    for automation_i, automation in enumerate(input_channel.automations):
-                        aptr = f"{ptr}.automation[{automation_i}]"
-                for output_i, output_channel in enumerate(clip.outputs):
+                    tag = get_node_tag(clip, input_channel)
+                    node_positions[tag] = dpg.get_item_pos(tag)
+                for output_channel in clip.outputs:
                     if not valid(output_channel):
                         continue
-                    ptr = f"{clip_ptr}.out[{output_i}]"
-                    self.gui_state.node_positions[ptr] = dpg.get_item_pos(get_node_tag(clip, output_channel))
-                for node_i, node in enumerate(clip.node_collection.nodes):
+                    tag = get_node_tag(clip, output_channel)
+                    node_positions[tag] = dpg.get_item_pos(tag)
+                for node in clip.node_collection.nodes:
                     if not valid(node):
                         continue
-                    node_ptr = f"{clip_ptr}.node[{node_i}]"
-                    self.gui_state.node_positions[node_ptr] = dpg.get_item_pos(get_node_tag(clip, node))
+                    tag = get_node_tag(clip, node)
+                    node_positions[tag] = dpg.get_item_pos(tag)
+
+        io_type_data = {
+            "inputs": {},
+            "outputs": {},
+        }
+        for inout in ["inputs", "outputs"]:
+            for index, io_type in self.gui_state["io_types"][inout].items():
+                io_type_data[inout][index] = io_type.__name__
+
+        io_arg_data = {
+            "inputs": {},
+            "outputs": {},
+        }
+        for inout in ["inputs", "outputs"]:
+            for index, io_args in self.gui_state["io_args"][inout].items():
+                io_arg_data[inout][index] = io_args
+
+
+        gui_data = self.gui_state.copy()
+        gui_data.update({
+            "io_types": io_type_data,
+            "io_args": io_arg_data,
+        })
 
         if self.state.project_filepath is not None:
             self.state.project_name = os.path.basename(self.state.project_filepath).replace(f".{PROJECT_EXTENSION}", "")
+            data = {
+                "state": self.state.serialize(),
+                "gui": gui_data
+            }
             with open(self.state.project_filepath, "w") as f:
-                f.write(json.dumps(self.state.serialize(), indent=4, sort_keys=False))
-            with open(self.state.project_filepath + ".gui", "wb") as f:
-                pickle.dump(self.gui_state, f)
+                f.write(json.dumps(data, indent=4, sort_keys=False))
 
             dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}]")
 
     def restore_gui_state(self):
-        for ptr, pos in self.gui_state.node_positions.items():
-            clip = self.state.get_clip_from_ptr(ptr)
-            obj = self.state.get_obj(ptr)
-            if obj.deleted:
-                continue
-            tag = get_node_tag(clip, obj)
+        for tag, pos in self.gui_state["node_positions"].items():
             dpg.set_item_pos(tag, pos)
 
-        for ptr, axis_limits in self.gui_state.axis_limits.items():
-            input_channel = self.state.get_obj(ptr)
-            if input_channel.deleted:
-                continue
-            dpg.set_axis_limits(get_plot_tag(input_channel)+".x_axis_limits", axis_limits['x'][0], axis_limits['x'][1])
-            dpg.set_axis_limits(get_plot_tag(input_channel)+".y_axis_limits", axis_limits['y'][0], axis_limits['y'][1])
-
-        for i, value in self.gui_state.io_types["inputs"].items():
-            dpg.configure_item(f"io.inputs.table.{i}.type", label=value.nice_title)
-        for i, value in self.gui_state.io_types["outputs"].items():
-            dpg.configure_item(f"io.outputs.table.{i}.type", label=value.nice_title)
-
-        for i, value in self.gui_state.io_args["inputs"].items():
-            dpg.set_value(f"io.inputs.table.{i}.arg", value)
-        for i, value in self.gui_state.io_args["outputs"].items():
-            dpg.set_value(f"io.outputs.table.{i}.arg", value)
-
-    def restore(self, path):
-        with open(path, 'r') as f:
-            self.new_state = model.ProgramState()
-            self.new_state.deserialize(json.load(f))
-        try:
-            with open(path + ".gui", 'rb') as f:
-                self.new_gui_state = pickle.load(f)
-        except Exception as e:
-            print(e)
-            self.new_gui_state = GuiState()
-
-        print("[Stopping]")
-        dpg.stop_dearpygui()
+        for i, args in self.gui_state["io_args"]["inputs"].items():
+            dpg.set_value(f"io.inputs.table.{i}.arg", args)
+        for i, args in self.gui_state["io_args"]["outputs"].items():
+            dpg.set_value(f"io.outputs.table.{i}.arg", args)
 
     def save_last_active_clip(self):
-        if self._active_track is not None and self._active_clip is not None:
-            self.gui_state.track_last_active_clip[self._active_track.id] = self._active_clip.id
+        if valid(self._active_track) and valid(self._active_clip):
+            self.gui_state["track_last_active_clip"][self._active_track.id] = self._active_clip.id
 
-state = model.ProgramState()
-gui_state = GuiState()
+    def deserialize(self, data):
+        self.state.deserialize(data["state"])
+        self.gui_state = data["gui"]
 
-with Profile() as profile:
-    while state is not None:
-        gui = Gui()
-        state, gui_state = gui.run(state, gui_state)
-        print("[Done]")
+    def open_project(self, filepath):
+        new_cmd = ["python"] + sys.argv + ["--project", filepath]
+        subprocess.Popen(new_cmd)
+        dpg.stop_dearpygui()
 
-Stats(profile).strip_dirs().sort_stats(SortKey.CALLS).print_stats()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="NodeDMX [BETA]")
+    parser.add_argument("--project", 
+                        default=None,
+                        dest="project_filepath",
+                        help="Project file path.")
+
+    args = parser.parse_args()
+
+    gui = Gui()
+
+    if args.project_filepath:
+        with open(args.project_filepath, 'r') as f:
+            data = json.load(f)
+            gui.deserialize(data)
+
+    gui.run()
+    print("[Done]")
+
