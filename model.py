@@ -26,6 +26,8 @@ MAX_VALUES = {
     "float": 255.0,
 }
 
+NEAR_THRESHOLD = 0.01
+
 TYPES = ["bool", "int", "float", "array", "any"]
 
 UUID_DATABASE = {}
@@ -1340,7 +1342,7 @@ class ChannelAutomation(Identifier):
             for i, x in enumerate(self.values_x):
                 if x is None:
                     continue
-                if abs(x - p1[0]) >= 0.01:
+                if abs(x - p1[0]) >= NEAR_THRESHOLD:
                     continue
 
                 if i in [0, max_x_index]:

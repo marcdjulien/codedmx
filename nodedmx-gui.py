@@ -213,6 +213,7 @@ class Gui:
 
                                     # Unset activate clip
                                     self._active_clip = None
+                                    self._active_clip_slot = None
                                     for tag in self.tags["hide_on_clip_selection"]:
                                         dpg.configure_item(tag, show=False)
 
@@ -247,25 +248,30 @@ class Gui:
                             # Col
                             clip = track.clips[clip_i]
                             with dpg.table_cell() as cell_tag:
-                                group_tag = get_group_tag(track_i, clip_i)
-                                with dpg.group(tag=group_tag, horizontal=True, horizontal_spacing=5):
-                                    # Always add elements for an empty clip, if the clip is not empty, then we will update it after.
-                                    text_tag = f"{track.id}.{clip_i}.gui.text"
-                                    self.add_passive_button(
-                                        group_tag, 
-                                        text_tag, 
-                                        "", 
-                                        single_click_callback=self.select_clip_slot_clip_callback, 
-                                        double_click_callback=self.create_new_clip, 
-                                        user_data=("create", track_i, clip_i)
-                                    )
-                                    # Menu for empty clip
-                                    with dpg.popup(text_tag+".filler", mousebutton=1):
-                                        dpg.add_menu_item(label="New Clip", callback=self.create_new_clip, user_data=("create", track_i, clip_i))
-                                        dpg.add_menu_item(label="Paste", callback=self.paste_clip_callback, user_data=(track_i, clip_i))
+                                with dpg.group(horizontal=True):
+                                    group_tag = get_group_tag(track_i, clip_i)
 
-                                    if clip is not None:
-                                        self.populate_clip_slot(track_i, clip_i)
+                                    with dpg.group(tag=group_tag + ".play_button", horizontal=True, horizontal_spacing=5):
+                                        pass
+
+                                    with dpg.group(tag=group_tag, horizontal=True, horizontal_spacing=5):
+                                        # Always add elements for an empty clip, if the clip is not empty, then we will update it after.
+                                        text_tag = f"{track.id}.{clip_i}.gui.text"
+                                        self.add_passive_button(
+                                            group_tag, 
+                                            text_tag, 
+                                            "", 
+                                            single_click_callback=self.select_clip_slot_clip_callback, 
+                                            double_click_callback=self.create_new_clip, 
+                                            user_data=("create", track_i, clip_i)
+                                        )
+                                        # Menu for empty clip
+                                        with dpg.popup(text_tag+".filler", mousebutton=1):
+                                            dpg.add_menu_item(label="New Clip", callback=self.create_new_clip, user_data=("create", track_i, clip_i))
+                                            dpg.add_menu_item(label="Paste", callback=self.paste_clip_callback, user_data=(track_i, clip_i))
+
+                                        if clip is not None:
+                                            self.populate_clip_slot(track_i, clip_i)
 
                 self.update_clip_window()
 
@@ -555,7 +561,7 @@ class Gui:
             self.update_clip_window()
 
     def add_clip_elements(self, track, clip, group_tag, track_i, clip_i):
-        dpg.add_button(arrow=True, direction=dpg.mvDir_Right, tag=f"{clip.id}.gui.play_button", callback=self.play_clip_callback, user_data=(track,clip), parent=group_tag)                        
+        dpg.add_button(parent=group_tag + ".play_button", arrow=True, direction=dpg.mvDir_Right, tag=f"{clip.id}.gui.play_button", callback=self.play_clip_callback, user_data=(track,clip))                        
         
         text_tag = f"{clip.id}.name"
         self.add_passive_button(group_tag, text_tag, clip.name, self.select_clip_callback, user_data=(track, clip))
@@ -2717,9 +2723,11 @@ class Gui:
                     if norm_distance((x,y), plot_mouse_pos, dpg.get_axis_limits(x_axis_limits_tag), dpg.get_axis_limits(y_axis_limits_tag)) <= 0.015:
                         result = self.execute_wrapper(f"remove_automation_point {self._active_input_channel.id} {i}")
                         if result.success:
-                            point_tag = f"{self._active_input_channel.id}.series.{i}"
+                            point_tag = f"{self._active_input_channel.id}.{automation.id}.series.{i}"
                             dpg.delete_item(point_tag)
-                        return
+                            return
+                        else:
+                            raise RuntimeError("Failed to remove automation point")
 
                 point = self._quantize_point(*plot_mouse_pos, self._active_input_channel.dtype, automation.length, quantize_x=False)
                 result = self.execute_wrapper(
@@ -2835,14 +2843,33 @@ class Gui:
         if point_index in [0, max_x_i]:
             dpg.set_value(sender, (original_x, y))
             x = original_x
+        else:
 
-        quantize_x = True
-        delta_x = x - original_x
-        if self._quantize_amount is not None and (abs(delta_x) < self._quantize_amount/3):
-            x = original_x
-            quantize_x = False
+            quantize_x = True
+            delta_x = x - original_x
+            if self._quantize_amount is not None and (abs(delta_x) < self._quantize_amount/3):
+                x = original_x
+                quantize_x = False
 
-        x, y = self._quantize_point(x, y, input_channel.dtype, automation.length, quantize_x=quantize_x)
+            x, y = self._quantize_point(x, y, input_channel.dtype, automation.length, quantize_x=quantize_x)
+
+            # Constrain x between nearest points
+            left_xs, right_xs = [], []
+            for i, x_value in enumerate(automation.values_x):
+                if x_value is None or i == point_index:
+                    continue
+                dist = original_x - x_value
+                if dist < 0:
+                    right_xs.append((i, dist, x_value))
+                else:
+                    left_xs.append((i, dist, x_value))
+
+            right_xs = sorted(right_xs, key=lambda t: abs(t[1]))
+            left_xs = sorted(left_xs, key=lambda t: abs(t[1]))
+            left_x = left_xs[0][2]
+            right_x = right_xs[0][2]
+            x = min(max(x, left_x+model.NEAR_THRESHOLD), right_x-model.NEAR_THRESHOLD)
+
         dpg.set_value(sender, (x, y))
 
         result = self.execute_wrapper(f"update_automation_point {automation.id} {point_index} {x},{y}")
