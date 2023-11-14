@@ -187,9 +187,9 @@ class Parameterized(Identifier):
 
     def update_parameter(self, index, value):
         if 0 <= index < len(self.parameters):
-            return True, None
+            return True
         else:
-            return False, None
+            return False
 
     def add_parameter(self, parameter):
         assert self.get_parameter(parameter.name) is None
@@ -332,7 +332,7 @@ class ClipInputChannel(Parameterized):
                         continue
                     y = automation.values_y[i]
                     automation.update_point(i, (x, clamp(y, min_value, max_value)))
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -454,7 +454,7 @@ class OscInput(ClipInputChannel):
             if value.startswith("/"):
                 self.parameters[index].value = value
                 global_osc_server().map_channel(value, self)
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -475,17 +475,17 @@ class MidiInput(ClipInputChannel):
     def update_parameter(self, index, value):
         if self.parameters[index] == self.device_parameter:
             if not value:
-                return False, None
+                return False
             self.parameters[index].value = value
-            return True, None
+            return True
         elif self.parameters[index] == self.id_parameter:
             if self.device_parameter.value is None:
-                return False, None
+                return False
             result = value.split("/")
             if not len(result) == 2 and result[0] and result[1]:
-                return False, None
+                return False
             self.parameters[index].value = value
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -617,7 +617,7 @@ class FunctionCustomNode(FunctionNode):
         if self.parameters[index] == self.n_in_parameter:
             n = int(value)
             if n < 0:
-                return False, None
+                return False
 
             delta = n - len(self.inputs)
             if n < len(self.inputs):
@@ -634,7 +634,7 @@ class FunctionCustomNode(FunctionNode):
         elif self.parameters[index] == self.n_out_parameter:
             n = int(value)
             if n < 0:
-                return False, None
+                return False
                 
             delta = n - len(self.outputs)
             if n < len(self.outputs):
@@ -650,7 +650,7 @@ class FunctionCustomNode(FunctionNode):
             return True, (delta, channels)
         elif self.parameters[index] == self.code_parameter:
             self.parameters[2].value = value.replace("\n", "[NEWLINE]")
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -690,7 +690,7 @@ class FunctionBinaryOperator(FunctionNode):
                 "/": operator.truediv,
                 "*": operator.mul,
             }[value]
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -729,8 +729,8 @@ class FunctionSequencer(FunctionNode):
             if value.isnumeric():
                 self.parameters[index].value = int(value)
             else:
-                return False, None
-            return True, None
+                return False
+            return True
         elif self.parameters[index] == self.step_length_parameter:
             if value.isnumeric():
                 value = int(value)
@@ -740,11 +740,11 @@ class FunctionSequencer(FunctionNode):
                         numerator, denom = value.split("/")
                         value = float(numerator)/float(denom)
                     except Exception as e:
-                        return False, None
+                        return False
                 else:
-                    return False, None
+                    return False
             self.parameters[index].value = value
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -781,7 +781,7 @@ class FunctionScale(FunctionNode):
     def update_parameter(self, index, value):
         if self.parameters[index] in [self.in_min_parameter, self.in_max_parameter, self.out_min_parameter, self.out_max_parameter]:
             self.parameters[index].value = float(value)
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -943,7 +943,7 @@ class FunctionToggleOnChange(FunctionNode):
     def update_parameter(self, index, value):
         if self.parameters[index] == self.rising_only_parameter:
             self.parameters[index].value = value.lower() == "true"
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -1093,7 +1093,7 @@ class FunctionBuffer(FunctionNode):
                 value = int(value)
             except Exception as e:
                 print(e)
-                return False, None
+                return False
 
             container_value = self.inputs[0].get()
             if isinstance(container_value, list):
@@ -1102,7 +1102,7 @@ class FunctionBuffer(FunctionNode):
                 reset_value = 0
 
             self._buffer = [reset_value] * value
-            return True, None
+            return True
         else:
             return super().update_parameter(index, value)
 
@@ -1873,225 +1873,228 @@ class ProgramState(Identifier):
                 clip.toggle()
                 if clip.playing:
                     self.playing = True
-                return True
+                return Result(True)
 
-        if cmd == "new_clip":
-            track_id, clip_i = toks[1].split(",")
-            clip_i = int(clip_i)
-            track = self.get_obj(track_id)
-            assert clip_i < len(track.clips)
-            track[clip_i] = Clip(track.outputs)
-            return True, track[clip_i]
+        else: # edit mode
 
-        elif cmd == "create_input":
-            clip_id = toks[1]
-            input_type = toks[2]
-            clip = self.get_obj(clip_id)
-            new_input_channel = clip.create_input(input_type)
-            return True, new_input_channel
+            if cmd == "new_clip":
+                track_id, clip_i = toks[1].split(",")
+                clip_i = int(clip_i)
+                track = self.get_obj(track_id)
+                assert clip_i < len(track.clips)
+                track[clip_i] = Clip(track.outputs)
+                return Result(True, track[clip_i])
 
-        elif cmd == "create_output":
-            track_id = toks[1]
-            track = self.get_obj(track_id)
-            address = int(toks[2])
-            new_output_channel = track.create_output(address)
-            self.all_track_outputs.append(new_output_channel)
-            return True, new_output_channel
+            elif cmd == "create_input":
+                clip_id = toks[1]
+                input_type = toks[2]
+                clip = self.get_obj(clip_id)
+                new_input_channel = clip.create_input(input_type)
+                return Result(True, new_input_channel)
 
-        elif cmd == "create_output_group":
-            track_id = toks[1]
-            track = self.get_obj(track_id)
-            address = int(toks[2])
-            channel_names = full_command.split(" ", 3)[-1].split(',')
-            new_output_group = track.create_output_group(address, channel_names)
-            self.all_track_outputs.append(new_output_group)
-            return True, new_output_group
+            elif cmd == "create_output":
+                track_id = toks[1]
+                track = self.get_obj(track_id)
+                address = int(toks[2])
+                new_output_channel = track.create_output(address)
+                self.all_track_outputs.append(new_output_channel)
+                return Result(True, new_output_channel)
 
-        elif cmd == "create_link":
-            clip_id = toks[1]
-            src_id = toks[2]
-            dst_id = toks[3]
-            clip = self.get_obj(clip_id)
-            src_channel = self.get_obj(src_id)
-            dst_channel = self.get_obj(dst_id)
-            return clip.node_collection.add_link(src_channel, dst_channel)
+            elif cmd == "create_output_group":
+                track_id = toks[1]
+                track = self.get_obj(track_id)
+                address = int(toks[2])
+                channel_names = full_command.split(" ", 3)[-1].split(',')
+                new_output_group = track.create_output_group(address, channel_names)
+                self.all_track_outputs.append(new_output_group)
+                return Result(True, new_output_group)
 
-        elif cmd == "delete_link":
-            clip_id = toks[1]
-            src_id = toks[2]
-            dst_id = toks[3]
+            elif cmd == "create_link":
+                clip_id = toks[1]
+                src_id = toks[2]
+                dst_id = toks[3]
+                clip = self.get_obj(clip_id)
+                src_channel = self.get_obj(src_id)
+                dst_channel = self.get_obj(dst_id)
+                return Result(clip.node_collection.add_link(src_channel, dst_channel))
 
-            clip = self.get_obj(clip_id)
-            src_channel = self.get_obj(src_id)
-            dst_channel = self.get_obj(dst_id)
-            return clip.node_collection.del_link(src_channel, dst_channel)
+            elif cmd == "delete_link":
+                clip_id = toks[1]
+                src_id = toks[2]
+                dst_id = toks[3]
 
-        elif cmd == "create_node":
-            # resplit
-            toks = full_command.split(" ", 3)
-            clip_id = toks[1]
-            type_id = toks[2]
-            args = toks[3] or None
+                clip = self.get_obj(clip_id)
+                src_channel = self.get_obj(src_id)
+                dst_channel = self.get_obj(dst_id)
+                return Result(clip.node_collection.del_link(src_channel, dst_channel))
 
-            clip = self.get_obj(clip_id)
+            elif cmd == "create_node":
+                # resplit
+                toks = full_command.split(" ", 3)
+                clip_id = toks[1]
+                type_id = toks[2]
+                args = toks[3] or None
 
-            if type_id == "none":
-                node = clip.node_collection.add_node(None, None)
-            else:
-                node = clip.node_collection.add_node(FUNCTION_TYPES[type_id], args)
-            return True, node
+                clip = self.get_obj(clip_id)
 
-        elif cmd == "delete":
-            obj_id = toks[1]
-            obj = self.get_obj(obj_id)
-            if obj.deleted:
-                return False
-            obj.deleted = True
-            return True
+                if type_id == "none":
+                    node = clip.node_collection.add_node(None, None)
+                else:
+                    node = clip.node_collection.add_node(FUNCTION_TYPES[type_id], args)
+                return Result(True, node)
 
-        elif cmd == "set_active_automation":
-            input_id = toks[1]
-            automation_id = toks[2]
-            input_channel = self.get_obj(input_id)
-            automation = self.get_obj(automation_id)
-            input_channel.set_active_automation(automation)
-            return True 
+            elif cmd == "delete":
+                obj_id = toks[1]
+                obj = self.get_obj(obj_id)
+                if obj.deleted:
+                    return Result(False)
+                obj.deleted = True
+                return Result(True)
 
-        elif cmd == "add_automation":
-            input_id = toks[1]
-            input_channel = self.get_obj(input_id)
-            return True, input_channel.add_automation()
+            elif cmd == "set_active_automation":
+                input_id = toks[1]
+                automation_id = toks[2]
+                input_channel = self.get_obj(input_id)
+                automation = self.get_obj(automation_id)
+                input_channel.set_active_automation(automation)
+                return Result(True) 
 
-        elif cmd == "add_automation_point":
-            automation_id = toks[1]
-            point = toks[2]
-            automation = self.get_obj(automation_id)
-            automation.add_point([float(x) for x in point.split(",")])
-            return True
+            elif cmd == "add_automation":
+                input_id = toks[1]
+                input_channel = self.get_obj(input_id)
+                return Result(True, input_channel.add_automation())
 
-        elif cmd == "update_automation_point":
-            automation_id = toks[1]
-            point_index = toks[2]
-            point = toks[3]
-            automation = self.get_obj(automation_id)
-            automation.update_point(
-                int(point_index), [float(x) for x in point.split(",")]
-            )
-            return True
+            elif cmd == "add_automation_point":
+                automation_id = toks[1]
+                point = toks[2]
+                automation = self.get_obj(automation_id)
+                automation.add_point([float(x) for x in point.split(",")])
+                return Result(True)
 
-        elif cmd == "update_parameter":
-            # resplit
-            toks = full_command.split(" ", 3)
-            obj_id = toks[1]
-            param_i = toks[2]
-            if len(toks) <= 3:
-                return
-            value = toks[3]
-            node = self.get_obj(obj_id)
-            result = node.update_parameter(int(param_i), value)
-            return result
+            elif cmd == "update_automation_point":
+                automation_id = toks[1]
+                point_index = toks[2]
+                point = toks[3]
+                automation = self.get_obj(automation_id)
+                automation.update_point(
+                    int(point_index), [float(x) for x in point.split(",")]
+                )
+                return Result(True)
 
-        elif cmd == "update_channel_value":
-            input_id = toks[1]
-            value = " ".join(toks[2:])
-            try:
-                value = eval(value)
-            except:
-                print(f"Failed to evaluate {value}")
-                return False
-            input_channel = self.get_obj(input_id)
-            value = cast[input_channel.dtype](value)
-            input_channel.set(value)
-            return True
+            elif cmd == "update_parameter":
+                # resplit
+                toks = full_command.split(" ", 3)
+                obj_id = toks[1]
+                param_i = toks[2]
+                if len(toks) <= 3:
+                    return
+                value = toks[3]
+                node = self.get_obj(obj_id)
+                result = node.update_parameter(int(param_i), value)
+                if isinstance(result, tuple):
+                    return Result(result[0], result[1])
+                else:
+                    return Result(result)
 
-        elif cmd == "remove_automation_point":
-            src = toks[1]
-            point_index = toks[2]
-            input_channel = self.get_obj(src)
-            automation = input_channel.active_automation
-            return automation.remove_point(int(point_index))
+            elif cmd == "update_channel_value":
+                input_id = toks[1]
+                value = " ".join(toks[2:])
+                try:
+                    value = eval(value)
+                except:
+                    print(f"Failed to evaluate {value}")
+                    return Result(False)
+                input_channel = self.get_obj(input_id)
+                value = cast[input_channel.dtype](value)
+                input_channel.set(value)
+                return Result(True)
 
-        elif cmd == "create_io":
-            index = int(toks[1])
-            input_output = toks[2]
-            io_type = toks[3]
-            args = toks[4::]
-            args = " ".join(args)
-            IO_LIST = IO_OUTPUTS if input_output == "outputs" else IO_INPUTS
-            MIDI_LIST = MIDI_OUTPUT_DEVICES if input_output == "outputs" else MIDI_INPUT_DEVICES
-            try:
-                if io_type == "ethernet_dmx":
-                    IO_LIST[index] = EthernetDmxOutput(args)
-                    return True, IO_LIST[index]
-                elif io_type == "osc_server":
-                    # TODO: Only allow one
-                    IO_LIST[index].start(int(args))
-                    return True, IO_LIST[index]
-                elif io_type == "midi_input":
-                    IO_LIST[index] = MidiInputDevice(args)
-                    MIDI_LIST[args] = IO_LIST[index]
-                    self._map_all_midi_inputs()
-                    self._map_all_midi_inputs()
-                    return True, IO_LIST[index]
-                elif io_type == "midi_output":
-                    IO_LIST[index] = MidiOutputDevice(args)
-                    MIDI_LIST[args] = IO_LIST[index]
-                    return True, IO_LIST[index]
-            except Exception as e:
-                print(e)
-                return False, None
+            elif cmd == "remove_automation_point":
+                src = toks[1]
+                point_index = toks[2]
+                input_channel = self.get_obj(src)
+                automation = input_channel.active_automation
+                return Result(automation.remove_point(int(point_index)))
 
-        elif cmd == "duplicate_clip":
-            new_track_i = int(toks[1])
-            new_clip_i = int(toks[2])
-            clip_id = toks[3]
+            elif cmd == "create_io":
+                index = int(toks[1])
+                input_output = toks[2]
+                io_type = toks[3]
+                args = toks[4::]
+                args = " ".join(args)
+                IO_LIST = IO_OUTPUTS if input_output == "outputs" else IO_INPUTS
+                MIDI_LIST = MIDI_OUTPUT_DEVICES if input_output == "outputs" else MIDI_INPUT_DEVICES
+                try:
+                    if io_type == "ethernet_dmx":
+                        IO_LIST[index] = EthernetDmxOutput(args)
+                        return Result(True, IO_LIST[index])
+                    elif io_type == "osc_server":
+                        # TODO: Only allow one
+                        IO_LIST[index].start(int(args))
+                        return Result(True, IO_LIST[index])
+                    elif io_type == "midi_input":
+                        IO_LIST[index] = MidiInputDevice(args)
+                        MIDI_LIST[args] = IO_LIST[index]
+                        self._map_all_midi_inputs()
+                        self._map_all_midi_inputs()
+                        return Result(True, IO_LIST[index])
+                    elif io_type == "midi_output":
+                        IO_LIST[index] = MidiOutputDevice(args)
+                        MIDI_LIST[args] = IO_LIST[index]
+                        return Result(True, IO_LIST[index])
+                except Exception as e:
+                    print(e)
+                    return Result(False, None)
 
-            new_track = self.tracks[int(new_track_i)]
-            new_track_ptr = f"*track[{new_track_i}]"
-            old_clip = self.get_obj(clip_id)
-            new_clip = self.duplicate_obj(old_clip)
-            new_track[new_clip_i] = new_clip
-            return True, new_clip
+            elif cmd == "duplicate_clip":
+                new_track_i = int(toks[1])
+                new_clip_i = int(toks[2])
+                clip_id = toks[3]
 
-        elif cmd == "duplicate_node":
-            clip_id = toks[1]
-            obj_id = toks[2]
-            clip = self.get_obj(clip_id)
-            obj = self.get_obj(obj_id)
-            new_obj = self.duplicate_obj(obj)
-            collection = clip.node_collection.nodes if isinstance(new_obj, FunctionNode) else clip.inputs
-            collection.append(new_obj)
-            new_obj.name = update_name(new_obj.name, [obj.name for obj in collection])
-            return True, new_obj
+                new_track = self.tracks[int(new_track_i)]
+                new_track_ptr = f"*track[{new_track_i}]"
+                old_clip = self.get_obj(clip_id)
+                new_clip = self.duplicate_obj(old_clip)
+                new_track[new_clip_i] = new_clip
+                return Result(True, new_clip)
 
-        elif cmd == "double_automation":
-            automation_id = toks[1]
-            automation = self.get_obj(automation_id)
-            old_length = automation.length
-            automation.set_length(old_length * 2)
-            for i in range(automation.n_points()):
-                x = automation.values_x[i]
-                y = automation.values_y[i]
-                if x is not None:
-                    automation.add_point((x+old_length, y))
-            return True
+            elif cmd == "duplicate_node":
+                clip_id = toks[1]
+                obj_id = toks[2]
+                clip = self.get_obj(clip_id)
+                obj = self.get_obj(obj_id)
+                new_obj = self.duplicate_obj(obj)
+                collection = clip.node_collection.nodes if isinstance(new_obj, FunctionNode) else clip.inputs
+                collection.append(new_obj)
+                new_obj.name = update_name(new_obj.name, [obj.name for obj in collection])
+                return Result(True, new_obj)
 
-        elif cmd == "midi_map":
-            obj_id = toks[1]
-            obj = self.get_obj(obj_id)
-            dp = obj.get_parameter("device")
-            device_name = obj.get_parameter("device").value
-            id_ = obj.get_parameter("id").value
-            midi_channel, note_control = id_.split("/")
-            global_midi_control(device_name, "in").map_channel(int(midi_channel), int(note_control), obj)
-            return True
-        elif cmd == "unmap_midi":
-            obj_id = toks[1]
-            obj = self.get_obj(obj_id)
-            global_unmap_midi(obj)
-            return True
+            elif cmd == "double_automation":
+                automation_id = toks[1]
+                automation = self.get_obj(automation_id)
+                old_length = automation.length
+                automation.set_length(old_length * 2)
+                for i in range(automation.n_points()):
+                    x = automation.values_x[i]
+                    y = automation.values_y[i]
+                    if x is not None:
+                        automation.add_point((x+old_length, y))
+                return Result(True)
 
-        print("Previous command failed")
+            elif cmd == "midi_map":
+                obj_id = toks[1]
+                obj = self.get_obj(obj_id)
+                dp = obj.get_parameter("device")
+                device_name = obj.get_parameter("device").value
+                id_ = obj.get_parameter("id").value
+                midi_channel, note_control = id_.split("/")
+                global_midi_control(device_name, "in").map_channel(int(midi_channel), int(note_control), obj)
+                return Result(True)
+            elif cmd == "unmap_midi":
+                obj_id = toks[1]
+                obj = self.get_obj(obj_id)
+                global_unmap_midi(obj)
+                return Result(True)
 
     def _map_all_midi_inputs(self):
         for track in self.tracks:
@@ -2198,6 +2201,13 @@ class ProgramState(Identifier):
             return self.tracks[track_i][clip_i]
         raise RuntimeError(f"Failed to find clip for {clip_key}")
 
+
+class Result:
+    """Command result."""
+
+    def __init__(self, success, payload=None):
+        self.success = success
+        self.payload = payload
 
 IO_TYPES = {
     "ethernet_dmx": EthernetDmxOutput,

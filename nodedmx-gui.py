@@ -521,11 +521,11 @@ class Gui:
         track = self.state.tracks[int(track_i)]
 
         if action == "create":
-            success, clip = self.execute_wrapper(f"new_clip {track.id},{clip_i}")
-            if not success:
+            result = self.execute_wrapper(f"new_clip {track.id},{clip_i}")
+            if not result.success:
                 raise RuntimeError("Failed to create clip")
         else: # restore
-            clip = self.state.tracks[int(track_i)].clips[int(clip_i)]
+            pass
         
         self.populate_clip_slot(track_i, clip_i)
         self.update_clip_window()
@@ -550,7 +550,8 @@ class Gui:
 
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
-        if self.execute_wrapper(f"toggle_clip {track.id} {clip.id}"):
+        result = self.execute_wrapper(f"toggle_clip {track.id} {clip.id}")
+        if result.success:
             self.update_clip_window()
 
     def add_clip_elements(self, track, clip, group_tag, track_i, clip_i):
@@ -841,10 +842,14 @@ class Gui:
         right_click_menu = user_data[2]
         if action == "create":
             clip, dtype = args
-            success, input_channel = self.execute_wrapper(f"create_input {clip.id} {dtype}")
-            if not success:  
+            result = self.execute_wrapper(f"create_input {clip.id} {dtype}")
+            if not result.success:  
                 raise RuntimeError("Failed to create input")
-            success = self.execute_wrapper(f"add_automation {input_channel.id}")
+            input_channel = result.payload
+
+            result = self.execute_wrapper(f"add_automation {input_channel.id}")
+            if not result.success:  
+                raise RuntimeError("Failed to create automation")
         else: # restore
             clip, input_channel = args
 
@@ -957,9 +962,10 @@ class Gui:
             node_type = args[0]
             node_args = args[1]
             clip = args[2]
-            success, node = self.state.execute(f"create_node {clip.id} {node_type} {node_args or ''}")
-            if not success:
+            result = self.execute_wrapper(f"create_node {clip.id} {node_type} {node_args or ''}")
+            if not result.success:
                 return
+            node = result.payload
             self._last_add_function_node = (sender, app_data, user_data)
         else: # restore
             clip, node = args
@@ -1060,9 +1066,10 @@ class Gui:
             node_type = args[0]
             node_args = args[1]
             clip = args[2]
-            success, node = self.state.execute(f"create_node {clip.id} {node_type} {node_args}")
-            if not success:
+            result = self.execute_wrapper(f"create_node {clip.id} {node_type} {node_args}")
+            if not result.success:
                 return
+            node = result.payload
         else: # restore
             clip, node = args
 
@@ -1144,8 +1151,9 @@ class Gui:
         with self.gui_lock:
             n = int(app_data)
             clip, node, parameter_index = user_data
-            success, results = self.execute_wrapper(f"update_parameter {node.id} {parameter_index} {n}")
-            if success:
+            result = self.execute_wrapper(f"update_parameter {node.id} {parameter_index} {n}")
+            if result.success:
+                results = result.payload
                 delta, channels = results
                 for channel in channels:
                     if delta > 0:
@@ -1162,8 +1170,8 @@ class Gui:
         # If an input isn't connected to a node, the user can set it 
         if app_data is not None:
             input_channel = user_data
-            success = self.execute_wrapper(f"update_channel_value {input_channel.id} {app_data}")
-            if not success:
+            result = self.execute_wrapper(f"update_channel_value {input_channel.id} {app_data}")
+            if not result.success:
                 raise RuntimeError(f"Failed to update channel value {input_channel.id}")
 
     def load_custom_node_callback(self, sender, app_data, user_data):
@@ -1516,8 +1524,8 @@ class Gui:
 
                 def unmap_midi(sender, app_data, user_data):
                     obj = user_data
-                    success = self.execute_wrapper(f"unmap_midi {obj.id}")
-                    if success:
+                    result = self.execute_wrapper(f"unmap_midi {obj.id}")
+                    if result.success:
                         device_parameter_id = obj.get_parameter_id("device")
                         id_parameter_id = obj.get_parameter_id("id")
                         dpg.set_value(f"{device_parameter_id}.value", obj.get_parameter("device").value)
@@ -1528,7 +1536,9 @@ class Gui:
                 dpg.add_menu_item(label="Delete", callback=self.delete_selected_nodes)
 
     def update_midi_map_node(self, sender, app_data, user_data):
-        self.execute_wrapper(f"midi_map {user_data.id}")
+        result = self.execute_wrapper(f"midi_map {user_data.id}")
+        if not result.success:
+            raise RuntimeError("Failed to map midi")
 
     def learn_midi_map_node(self, sender, app_data, user_data):
         obj, inout = user_data
@@ -1548,13 +1558,15 @@ class Gui:
                 if inout == "input":
                     self.update_parameter_by_name(obj, "device", device_name)
                     self.update_parameter_by_name(obj, "id", f"{message.channel}/{note_control}")
-                    success = self.execute_wrapper(f"midi_map {obj.id}")
-                    if success:
+                    result = self.execute_wrapper(f"midi_map {obj.id}")
+                    if result.success:
                         device_parameter_id = obj.get_parameter_id("device")
                         id_parameter_id = obj.get_parameter_id("id")
                         dpg.set_value(f"{device_parameter_id}.value", obj.get_parameter("device").value)
                         dpg.set_value(f"{id_parameter_id}.value", obj.get_parameter("id").value)
                         dpg.delete_item("midi_map_window")
+                    else:
+                        raise RuntimeError("Failed to map midi")
                 else: #output
                     input_midi_device_name = device_name
                     while input_midi_device_name:
@@ -1577,8 +1589,8 @@ class Gui:
     def update_parameter(self, sender, app_data, user_data):
         if app_data is not None:
             obj, parameter_index = user_data
-            success, _ = self.execute_wrapper(f"update_parameter {obj.id} {parameter_index} {app_data}")
-            if not success:
+            result = self.execute_wrapper(f"update_parameter {obj.id} {parameter_index} {app_data}")
+            if not result.success:
                 raise RuntimeError("Failed to update parameter")
             dpg.set_value(f"{obj.parameters[parameter_index].id}.value", obj.parameters[parameter_index].value)
             return success
@@ -1601,8 +1613,8 @@ class Gui:
             else:
                 src_channel, dst_channel = user_data[2:4]
             
-            success = self.execute_wrapper(f"create_link {clip.id} {src_channel.id} {dst_channel.id}")
-            if not success:
+            result = self.execute_wrapper(f"create_link {clip.id} {src_channel.id} {dst_channel.id}")
+            if not result.success:
                 raise RuntimeError("Failed to create link")
         else: # restore
             src_channel, dst_channel = user_data[2:4]
@@ -1843,8 +1855,8 @@ class Gui:
                 if len(get_valid_automations(input_channel)) <= 1:
                     return
 
-                success = self.execute_wrapper(f"delete {automation.id}")
-                if success:
+                result = self.execute_wrapper(f"delete {automation.id}")
+                if result.success:
                     tab_bar_tag = f"{input_channel.id}.tab_bar"
                     tags_to_delete = [
                         f"{tab_bar_tag}.{automation.id}.button",
@@ -1859,9 +1871,10 @@ class Gui:
 
             def add_preset(sender, app_data, user_data):
                 input_channel = user_data
-                success, automation = self.execute_wrapper(f"add_automation {input_channel.id}")
+                result = self.execute_wrapper(f"add_automation {input_channel.id}")
                 tab_bar_tag = f"{input_channel.id}.tab_bar"
-                if success:
+                if result.success:
+                    automation = result.payload
                     dpg.add_tab_button(tag=f"{tab_bar_tag}.{automation.id}.button", parent=tab_bar_tag, label=automation.name, callback=select_preset, user_data=(input_channel, automation))
                     dpg.add_tab_button(tag=f"{tab_bar_tag}.{automation.id}.button.x", parent=tab_bar_tag, label="X", callback=delete_preset, user_data=(input_channel, automation))
                     self.reset_automation_plot(input_channel)
@@ -1947,8 +1960,8 @@ class Gui:
        if automation is None:
             return
 
-       success = self.execute_wrapper(f"double_automation {automation.id}")
-       if success:
+       result = self.execute_wrapper(f"double_automation {automation.id}")
+       if result.success:
         self.reset_automation_plot(self._active_input_channel)
 
     def reset_automation_plot(self, input_channel):
@@ -2057,11 +2070,10 @@ class Gui:
                 if action == "create":
                     _, index, input_output = user_data
                     io_type = self.gui_state["io_types"][input_output][int(index)]
-                    success, io = self.state.execute(f"create_io {index} {input_output} {io_type.type} {app_data}")
-                    
-                    if not success:
+                    result = self.execute_wrapper(f"create_io {index} {input_output} {io_type.type} {app_data}")
+                    if not result.success:
                         raise RuntimeError("Failed to create IO")
-
+                    io = result.payload
                     self.gui_state["io_args"][input_output][index] = app_data
                 else: # restore
                     _, index, io = user_data
@@ -2199,9 +2211,10 @@ class Gui:
         track = user_data[1]
         if action == "create":
             address = user_data[2] if len(user_data) == 3   else 1
-            success, output_channel = self.state.execute(f"create_output {track.id} {address}")
-            if not success:
+            result = self.execute_wrapper(f"create_output {track.id} {address}")
+            if not result.success:
                 return
+            output_channel = result.payload
         else: # restore
             output_channel = user_data[2]
 
@@ -2224,9 +2237,10 @@ class Gui:
         if action == "create":
             starting_address = user_data[2]
             channel_names = user_data[3]
-            success, output_channel_group = self.state.execute(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
-            if not success:
+            result = self.execute_wrapper(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
+            if not result.success:
                 return
+            output_channel_group = result.payload
         else: # restore
             output_channel_group = user_data[2]
 
@@ -2268,8 +2282,8 @@ class Gui:
         src_node_attribute_tag, dst_node_attribute_tag = link_key.split(":")
         src_id = src_node_attribute_tag.replace(".node_attribute", "").split(".", 1)[-1]
         dst_id = dst_node_attribute_tag.replace(".node_attribute", "").split(".", 1)[-1]
-        success = self.execute_wrapper(f"delete_link {clip.id} {src_id} {dst_id}")
-        if success:              
+        result = self.execute_wrapper(f"delete_link {clip.id} {src_id} {dst_id}")
+        if result.success:              
             dpg.delete_item(link_tag)
         else:
             raise RuntimeError(f"Failed to delete: {link_key}")
@@ -2317,8 +2331,8 @@ class Gui:
             parent = get_output_configuration_window_tag(track)
             dpg.delete_item(parent)
 
-            success = self.execute_wrapper(f"delete {output_channel.id}")
-            if success:
+            result = self.execute_wrapper(f"delete {output_channel.id}")
+            if result.success:
                 # Delete each Node from each clip's node editor
                 for clip_i, clip in enumerate(track.clips):
                     if clip is None:
@@ -2337,8 +2351,8 @@ class Gui:
             parent = get_output_configuration_window_tag(track)
             dpg.delete_item(parent)
 
-            success = self.execute_wrapper(f"delete {output_channel_group.id}")
-            if success:
+            result = self.execute_wrapper(f"delete {output_channel_group.id}")
+            if result.success:
                 # Delete each Node from each clip's node editor
                 for clip_i, clip in enumerate(track.clips):
                     if clip is None:
@@ -2359,8 +2373,8 @@ class Gui:
             # Deleting outputs from the Node Editor GUI is not allowed.
             if "DmxOutput" in node_id:
                 continue
-            success = self.execute_wrapper(f"delete {node_id}")
-            if success:
+            result = self.execute_wrapper(f"delete {node_id}")
+            if result.success:
                 self._delete_node_gui(alias, node_id)
             else:
                 RuntimeError(f"Failed to delete: {node_id}")
@@ -2416,16 +2430,18 @@ class Gui:
                 if isinstance(obj, str):
                     link_ids.append(obj)
                 elif isinstance(obj, model.ClipInputChannel):
-                    success, new_input_channel = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
-                    if success:
+                    result = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
+                    if result.success:
+                        new_input_channel = result.payload
                         self.add_input_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_input_channel), False))
                         self.copy_node_position(self._active_clip, obj, self._active_clip, new_input_channel)
                         duplicate_map[obj.id] = new_input_channel
                     else:
                         raise RuntimeError(f"Failed to duplicate {obj.id}")
                 elif isinstance(obj, model.FunctionNode):
-                    success, new_node = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
-                    if success:
+                    result = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
+                    if result.success:
+                        new_node = result.payload
                         if isinstance(obj, model.FunctionCustomNode):
                             self.add_custom_function_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_node), False))
                         else:
@@ -2469,8 +2485,9 @@ class Gui:
 
         clip = obj
         clip_id = clip.id
-        success, new_clip = self.execute_wrapper(f"duplicate_clip {track_i} {clip_i} {clip_id} ")
-        if success:
+        result = self.execute_wrapper(f"duplicate_clip {track_i} {clip_i} {clip_id} ")
+        if result.success:
+            new_clip = result.payload
             self.populate_clip_slot(track_i, clip_i)
         else:
             raise RuntimeError(f"Failed to duplicate clip {clip_id}")
@@ -2698,16 +2715,17 @@ class Gui:
                     x_axis_limits_tag = f"{self._active_input_channel.id}.plot.x_axis_limits"
                     y_axis_limits_tag = f"{self._active_input_channel.id}.plot.y_axis_limits"
                     if norm_distance((x,y), plot_mouse_pos, dpg.get_axis_limits(x_axis_limits_tag), dpg.get_axis_limits(y_axis_limits_tag)) <= 0.015:
-                        if self.execute_wrapper(f"remove_automation_point {self._active_input_channel.id} {i}"):
+                        result = self.execute_wrapper(f"remove_automation_point {self._active_input_channel.id} {i}")
+                        if result.success:
                             point_tag = f"{self._active_input_channel.id}.series.{i}"
                             dpg.delete_item(point_tag)
                         return
 
                 point = self._quantize_point(*plot_mouse_pos, self._active_input_channel.dtype, automation.length, quantize_x=False)
-                success = self.execute_wrapper(
+                result = self.execute_wrapper(
                     f"add_automation_point {automation.id} {point[0]},{point[1]}"
                 )
-                if success:
+                if result.success:
                     self.reset_automation_plot(self._active_input_channel)
 
     def key_press_callback(self, sender, app_data, user_data):
@@ -2827,8 +2845,8 @@ class Gui:
         x, y = self._quantize_point(x, y, input_channel.dtype, automation.length, quantize_x=quantize_x)
         dpg.set_value(sender, (x, y))
 
-        success = self.execute_wrapper(f"update_automation_point {automation.id} {point_index} {x},{y}")
-        if not success:
+        result = self.execute_wrapper(f"update_automation_point {automation.id} {point_index} {x},{y}")
+        if not result.success:
             raise RuntimeError("Failed to update automation point")
 
     def _quantize_point(self, x, y, dtype, length, quantize_x=True):
