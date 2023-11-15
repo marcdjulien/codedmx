@@ -28,7 +28,7 @@ MAX_VALUES = {
 
 NEAR_THRESHOLD = 0.01
 
-TYPES = ["bool", "int", "float", "array", "any"]
+TYPES = ["bool", "int", "float", "any"]
 
 UUID_DATABASE = {}
 
@@ -224,15 +224,47 @@ class Parameterized(Identifier):
             self.parameters[i].deserialize(parameter_data)
 
 
-class ClipInputChannel(Parameterized):
+class SourceNode(Parameterized):
+    def __init__(self, **kwargs):
+        super().__init__()
+        kwargs.setdefault("direction", "out")
+        self.name = kwargs.get("name", "")
+        self.channel = Channel(**kwargs)
+        self.input_type = None
+
+    def update(self, clip_beat):
+        pass
+
+    @property
+    def dtype(self):
+        return self.channel.dtype 
+
+    @property
+    def direction(self):
+        return self.channel.direction 
+
+    @property
+    def value(self):
+        return self.channel.value 
+
+    @property
+    def size(self):
+        return self.channel.size 
+
+    def set(self, value):
+        self.channel.set(value)
+
+    def get(self):
+        return self.channel.get()
+
+
+class AutomatableSourceNode(SourceNode):
     nice_title = "Input"
 
     def __init__(self, **kwargs):
-        super().__init__()
-        self.name = kwargs.get("name", "")
-        self.channel = Channel(**kwargs)
-        self.ext_channel = Channel(**kwargs)
+        super().__init__(**kwargs)
         self.input_type = kwargs.get("dtype", "float")
+        self.ext_channel = Channel(**kwargs)
 
         self.mode = "automation"
         self.min_parameter = Parameter("min", 0)
@@ -283,26 +315,7 @@ class ClipInputChannel(Parameterized):
     def set(self, value):
         value = max(self.min_parameter.value, value)
         value = min(self.max_parameter.value, value)
-        self.channel.set(value)
-
-    def get(self):
-        return self.channel.get()
-
-    @property
-    def dtype(self):
-        return self.channel.dtype 
-
-    @property
-    def direction(self):
-        return self.channel.direction 
-
-    @property
-    def value(self):
-        return self.channel.value 
-
-    @property
-    def size(self):
-        return self.channel.size 
+        super().set(value)
 
     def set_active_automation(self, automation):
         assert automation in self.automations
@@ -441,7 +454,17 @@ class DmxOutputGroup(Identifier):
             self.outputs[i].deserialize(output_data)
 
 
-class OscInput(ClipInputChannel):
+class ColorNode(SourceNode):
+    nice_title = "Color"
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("dtype", "any")
+        kwargs.setdefault("size", 3)
+        super().__init__(**kwargs) 
+        self.input_type = "color"
+
+
+class OscInput(AutomatableSourceNode):
     def __init__(self, **kwargs):
         kwargs.setdefault("name", f"OSC")
         kwargs.setdefault("direction", "out")
@@ -461,7 +484,7 @@ class OscInput(ClipInputChannel):
             return super().update_parameter(index, value)
 
 
-class MidiInput(ClipInputChannel):
+class MidiInput(AutomatableSourceNode):
     
     def __init__(self, **kwargs):
         kwargs.setdefault("name", "MIDI")
@@ -791,13 +814,6 @@ class FunctionScale(FunctionNode):
 class FunctionDemux(FunctionNode):
     nice_title = "Demux"
 
-    clear_values = {
-        "bool": 0,
-        "int": 0,
-        "float": 0.0,
-        "array": [],
-    }
-
     def __init__(self, args="0", name="Demux"):
         super().__init__(args, name)
         self.n = int(args)
@@ -959,7 +975,7 @@ class FunctionLastChanged(FunctionNode):
         for i in range(self.n):
             self.inputs.append(Channel(direction="in", value=0, dtype="any", name=f"{i+1}"))
 
-        self.outputs.append(Channel(direction="out", dtype="int", name=f"out{n}"))
+        self.outputs.append(Channel(direction="out", dtype="int", name=f"out{self.n}"))
         self.type = "last_changed"
         self._last_values = [None]*n
         self._last_changed_index = 0
@@ -1007,13 +1023,14 @@ class FunctionSeparator(FunctionNode):
         self.inputs.append(Channel(direction="in", dtype="any", size=self.n, name=f"in{self.n}"))
 
         for i in range(self.n):
-            self.outputs.append(Channel(direction="out", dtype="any", name=f"out{n}"))
+            self.outputs.append(Channel(direction="out", dtype="any", name=f"out{self.n}"))
         self.type = "separator"
 
     def transform(self):
         values = self.inputs[0].get()
         for i, value in enumerate(values):
-            self.outputs[i].set(value)
+            if i < len(self.outputs):
+                self.outputs[i].set(value)
 
 
 class FunctionRandom(FunctionNode):
@@ -1447,17 +1464,20 @@ class Clip(Identifier):
 
         self.playing = False
 
-    def create_input(self, input_type):
-        n = len(self.inputs)
+    def create_source(self, input_type):
         if input_type.startswith("osc_input"):
             input_type = input_type.replace("osc_input_", "")
-            new_inp = OscInput(dtype=input_type)
+            new_source = OscInput(dtype=input_type)
         elif input_type == "midi":
-            new_inp = MidiInput()
+            new_source = MidiInput()
+        elif input_type == "color":
+            name = update_name("Color", [obj.name for obj in self.inputs])
+            new_source = ColorNode(name=name)
         else:
-            new_inp = ClipInputChannel(direction="out", dtype=input_type, name=f"In.{n}")
-        self.inputs.append(new_inp)
-        return new_inp
+            name = update_name("In", [obj.name for obj in self.inputs])
+            new_source = AutomatableSourceNode(dtype=input_type, name=name)
+        self.inputs.append(new_source)
+        return new_source
 
     def update(self, beat):
         if self.playing:
@@ -1503,7 +1523,7 @@ class Clip(Identifier):
 
         for input_data in data["inputs"]:
             if input_data["input_type"] in cast.keys():
-                channel = ClipInputChannel()
+                channel = AutomatableSourceNode()
                 channel.deserialize(input_data)
             elif input_data["input_type"].startswith("osc_input_"):
                 channel = OscInput()
@@ -1887,11 +1907,11 @@ class ProgramState(Identifier):
                 track[clip_i] = Clip(track.outputs)
                 return Result(True, track[clip_i])
 
-            elif cmd == "create_input":
+            elif cmd == "create_source":
                 clip_id = toks[1]
                 input_type = toks[2]
                 clip = self.get_obj(clip_id)
-                new_input_channel = clip.create_input(input_type)
+                new_input_channel = clip.create_source(input_type)
                 return Result(True, new_input_channel)
 
             elif cmd == "create_output":

@@ -35,6 +35,9 @@ NODE_EXTENSION = "ndmxc"
 AXIS_MARGIN = 0.025
 HUMAN_DELAY = 0.125
 
+def clamp(x, min_value, max_value):
+    return min(max(min_value, x), max_value)
+
 def norm_distance(p1, p2, x_limit, y_limit):
     np1 = p1[0]/x_limit[1], p1[1]/y_limit[1],
     np2 = p2[0]/x_limit[1], p2[1]/y_limit[1],
@@ -74,8 +77,8 @@ def get_output_configuration_window_tag(track):
 def get_io_matrix_window_tag(clip):
     return f"{clip.id}.gui.io_matrix_window"
 
-def get_automation_window_tag(input_channel, is_id=False):
-    return f"{input_channel if is_id else input_channel.id}.gui.automation_window"
+def get_source_node_window_tag(input_channel, is_id=False):
+    return f"{input_channel if is_id else input_channel.id}.gui.source_node_window"
 
 def get_properties_window_tag(obj):
     return f"{obj.id}.gui.properties_window"
@@ -285,6 +288,24 @@ class Gui:
             dpg.add_key_down_handler(callback=self.key_down_callback)
             dpg.add_key_release_handler(callback=self.key_release_callback)
 
+        # Themes
+        with dpg.theme(tag="bg_line.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvPlotCol_Line, (255, 255, 255, 30), category=dpg.mvThemeCat_Plots)
+                dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1, category=dpg.mvThemeCat_Plots)
+
+        with dpg.theme(tag="automation_line.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvPlotCol_Line, (0, 200, 255), category=dpg.mvThemeCat_Plots)
+                dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 3, category=dpg.mvThemeCat_Plots)
+
+        with dpg.theme(tag="transport.play_button.pause.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (255, 255, 255, 30), category=dpg.mvThemeCat_Core)
+        with dpg.theme(tag="transport.play_button.play.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 255, 0, 60), category=dpg.mvThemeCat_Core)
+
         # Create Viewport
         logging.debug("Creating Viewport")
         dpg.create_viewport(title=f"NodeDMX [{self.state.project_name}] *", width=SCREEN_WIDTH, height=SCREEN_HEIGHT, x_pos=50, y_pos=0)
@@ -439,9 +460,9 @@ class Gui:
             with dpg.menu(label="Test"):
                 def test1():
                     self.create_new_clip(None, None, ("create", "1", "1"))
-                    self.add_input_node(None, None, ("create", (self.state.tracks[1].clips[1], "int"), False))
-                    self.add_input_node(None, None, ("create", (self.state.tracks[1].clips[1], "bool"), False))
-                    self.add_input_node(None, None, ("create", (self.state.tracks[1].clips[1], "float"), False))
+                    self.add_source_node(None, None, ("create", (self.state.tracks[1].clips[1], "int"), False))
+                    self.add_source_node(None, None, ("create", (self.state.tracks[1].clips[1], "bool"), False))
+                    self.add_source_node(None, None, ("create", (self.state.tracks[1].clips[1], "float"), False))
                     self.add_function_node(None, None, ("create", ("demux", 5, self.state.tracks[1].clips[1]), False))
                 dpg.add_menu_item(label="Test 1", callback=test1)
 
@@ -457,9 +478,8 @@ class Gui:
             #dpg.add_text("Tempo:", pos=(transport_start_x + 90,0))
             dpg.add_input_float(label="Tempo", default_value=self.state.tempo, pos=(transport_start_x + 75, 0), on_enter=True, callback=update_tempo, width=45, tag="tempo", step=0)
 
-            def toggle_play(sender):
-                self.state.toggle_play()
-            dpg.add_button(label="[Play]", callback=toggle_play, pos=(transport_start_x + 165, 0), tag="play_button")
+            dpg.add_button(label="[Play]", callback=self.toggle_play_callback, pos=(transport_start_x + 220, 0), tag="play_button")
+            dpg.bind_item_theme("play_button", "transport.play_button.pause.theme")
 
             def mode_change():
                 self.state.mode = "edit" if self.state.mode == "performance" else "performance"
@@ -473,16 +493,6 @@ class Gui:
                 dpg.add_string_value(default_value="", tag="io_matrix.destination_filter_text")
                 dpg.add_string_value(default_value="", tag="last_midi_message")
 
-            # Themes
-            with dpg.theme(tag="bg_line.theme"):
-                with dpg.theme_component(dpg.mvAll):
-                    dpg.add_theme_color(dpg.mvPlotCol_Line, (255, 255, 255, 30), category=dpg.mvThemeCat_Plots)
-                    dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 1, category=dpg.mvThemeCat_Plots)
-
-            with dpg.theme(tag="automation_line.theme"):
-                with dpg.theme_component(dpg.mvAll):
-                    dpg.add_theme_color(dpg.mvPlotCol_Line, (0, 200, 255), category=dpg.mvThemeCat_Plots)
-                    dpg.add_theme_style(dpg.mvPlotStyleVar_LineWeight, 3, category=dpg.mvThemeCat_Plots)
 
         ################
         #### Restore ###
@@ -559,6 +569,13 @@ class Gui:
         result = self.execute_wrapper(f"toggle_clip {track.id} {clip.id}")
         if result.success:
             self.update_clip_window()
+
+    def toggle_play_callback(self):
+        self.state.toggle_play()
+        if self.state.playing:
+            dpg.bind_item_theme("play_button", "transport.play_button.play.theme")
+        else:
+            dpg.bind_item_theme("play_button", "transport.play_button.pause.theme")
 
     def add_clip_elements(self, track, clip, group_tag, track_i, clip_i):
         dpg.add_button(parent=group_tag + ".play_button", arrow=True, direction=dpg.mvDir_Right, tag=f"{clip.id}.gui.play_button", callback=self.play_clip_callback, user_data=(track,clip))                        
@@ -697,7 +714,7 @@ class Gui:
         for input_index, input_channel in enumerate(clip.inputs):
             if input_channel.deleted:
                 continue
-            self.add_input_node(sender=None, app_data=None, user_data=("restore", (clip, input_channel), False))
+            self.add_source_node(sender=None, app_data=None, user_data=("restore", (clip, input_channel), False))
 
         for output_index, output_channel in enumerate(clip.outputs):
             if output_channel.deleted:
@@ -747,13 +764,14 @@ class Gui:
     def add_node_menu(self, parent, clip):
         right_click_menu = "popup_menu" in dpg.get_item_alias(parent)
 
-        with dpg.menu(parent=parent, label="Inputs"):
-            dpg.add_menu_item(label="Bool", callback=self.add_input_node, user_data=("create", (clip, "bool"), right_click_menu))
-            dpg.add_menu_item(label="Integer", callback=self.add_input_node, user_data=("create", (clip, "int"), right_click_menu))
-            dpg.add_menu_item(label="Float", callback=self.add_input_node, user_data=("create", (clip, "float"), right_click_menu))
-            dpg.add_menu_item(label="Osc Integer", callback=self.add_input_node, user_data=("create", (clip, "osc_input_int"), right_click_menu))
-            dpg.add_menu_item(label="Osc Float", callback=self.add_input_node, user_data=("create", (clip, "osc_input_float"), right_click_menu))
-            dpg.add_menu_item(label="MIDI", callback=self.add_input_node, user_data=("create", (clip, "midi"), right_click_menu))
+        with dpg.menu(parent=parent, label="Sources"):
+            dpg.add_menu_item(label="Bool", callback=self.add_source_node, user_data=("create", (clip, "bool"), right_click_menu))
+            dpg.add_menu_item(label="Integer", callback=self.add_source_node, user_data=("create", (clip, "int"), right_click_menu))
+            dpg.add_menu_item(label="Float", callback=self.add_source_node, user_data=("create", (clip, "float"), right_click_menu))
+            dpg.add_menu_item(label="Osc Integer", callback=self.add_source_node, user_data=("create", (clip, "osc_input_int"), right_click_menu))
+            dpg.add_menu_item(label="Osc Float", callback=self.add_source_node, user_data=("create", (clip, "osc_input_float"), right_click_menu))
+            dpg.add_menu_item(label="MIDI", callback=self.add_source_node, user_data=("create", (clip, "midi"), right_click_menu))
+            dpg.add_menu_item(label="Color", callback=self.add_source_node, user_data=("create", (clip, "color"), right_click_menu))
 
         with dpg.menu(parent=parent, label="Functions"):
             with dpg.menu(label="Aggregator"):
@@ -842,13 +860,119 @@ class Gui:
         return wrapper
 
     @gui_lock_callback
-    def add_input_node(self, sender, app_data, user_data):
+    def add_source_node(self, sender, app_data, user_data):
+        """Figure out the type then call the correct downstream add_*_source_node function."""
+        action = user_data[0]
+        args = user_data[1]
+        if action == "restore":
+            _, input_channel = args
+            input_type = input_channel.input_type
+        else: # create
+            _, input_type = args
+
+        if input_type in ["color"]:
+            self.add_standard_source_node(sender, app_data, user_data)
+        else:
+            self.add_automatable_source_node(sender, app_data, user_data)
+
+    def add_standard_source_node(self, sender, app_data, user_data):
         action = user_data[0]
         args = user_data[1]
         right_click_menu = user_data[2]
         if action == "create":
             clip, dtype = args
-            result = self.execute_wrapper(f"create_input {clip.id} {dtype}")
+            result = self.execute_wrapper(f"create_source {clip.id} {dtype}")
+            if not result.success:  
+                raise RuntimeError("Failed to create input")
+            input_channel = result.payload
+
+        else: # restore
+            clip, input_channel = args
+
+        if right_click_menu:
+            dpg.configure_item(get_node_window_tag(clip) + ".popup_menu", show=False)
+
+        node_editor_tag = get_node_editor_tag(clip)
+        dtype = input_channel.dtype
+
+        node_tag = get_node_tag(clip, input_channel)
+        window_x, window_y = dpg.get_item_pos(get_node_window_tag(clip))
+        rel_mouse_x = self.mouse_clickr_x - window_x
+        rel_mouse_y = self.mouse_clickr_y - window_y
+        with dpg.node(label=input_channel.name, tag=node_tag, parent=node_editor_tag, pos=(rel_mouse_x, rel_mouse_y) if right_click_menu else (0, 0)):
+
+            self.add_node_popup_menu(node_tag, clip, input_channel)
+
+            parameters = getattr(input_channel, "parameters", [])
+            
+            for parameter_index, parameter in enumerate(parameters):
+                with dpg.node_attribute(attribute_type=dpg.mvNode_Attr_Static):
+                    dpg.add_input_text(
+                        label=parameter.name, 
+                        tag=f"{parameter.id}.value",
+                        callback=self.update_parameter, 
+                        user_data=(input_channel, parameter_index), 
+                        width=70,
+                        default_value=parameter.value if parameter.value is not None else "",
+                        on_enter=True,
+                    )
+
+            with dpg.node_attribute(tag=get_node_attribute_tag(clip, input_channel), attribute_type=dpg.mvNode_Attr_Output):
+                kwargs = {}
+                if input_channel.dtype == "any":
+                    add_func = dpg.add_input_text
+                elif input_channel.size == 1:
+                    add_func = dpg.add_input_float if input_channel.dtype == "float" else dpg.add_input_int
+                else:
+                    add_func = dpg.add_drag_floatx 
+                    kwargs["size"] = input_channel.size
+
+                add_func(
+                    label="out", 
+                    tag=f"{input_channel.id}.value", 
+                    width=90, 
+                    on_enter=True,
+                    default_value=input_channel.get(),
+                    callback=self.update_input_channel_value_callback,
+                    user_data=input_channel,
+                    **kwargs
+                )
+
+            # Create Automation Editor
+            self.create_source_node_window(
+                clip,
+                input_channel,
+            )
+
+            # When user clicks on the node, bring up the configuration window.
+            def input_selected_callback(sender, app_data, user_data):
+                # Show right click menu
+                if app_data[0] == 1:
+                    dpg.configure_item(f"{node_tag}.popup", show=True)
+                else:
+                    clip, input_channel = user_data
+                    self._active_input_channel = input_channel
+                    for other_input_channel in clip.inputs:
+                        if other_input_channel.deleted:
+                            continue
+                        dpg.configure_item(get_source_node_window_tag(other_input_channel), show=False)
+                    dpg.configure_item(get_source_node_window_tag(self._active_input_channel), show=True)
+
+            handler_registry_tag = f"{node_tag}.item_handler_registry"
+            with dpg.item_handler_registry(tag=handler_registry_tag) as handler:
+                dpg.add_item_clicked_handler(callback=input_selected_callback, user_data=(clip, input_channel))
+            dpg.bind_item_handler_registry(node_tag, handler_registry_tag)
+
+            self.create_properties_window(clip, input_channel)
+            self.update_io_matrix_window(clip)
+
+    def add_automatable_source_node(self, sender, app_data, user_data):
+        action = user_data[0]
+        args = user_data[1]
+        right_click_menu = user_data[2]
+        if action == "create":
+            clip, dtype = args
+            result = self.execute_wrapper(f"create_source {clip.id} {dtype}")
             if not result.success:  
                 raise RuntimeError("Failed to create input")
             input_channel = result.payload
@@ -934,7 +1058,6 @@ class Gui:
             self.create_automation_window(
                 clip,
                 input_channel,
-                action
             )
 
             # When user clicks on the node, bring up the automation window.
@@ -948,8 +1071,8 @@ class Gui:
                     for other_input_channel in clip.inputs:
                         if other_input_channel.deleted:
                             continue
-                        dpg.configure_item(get_automation_window_tag(other_input_channel), show=False)
-                    dpg.configure_item(get_automation_window_tag(self._active_input_channel), show=True)
+                        dpg.configure_item(get_source_node_window_tag(other_input_channel), show=False)
+                    dpg.configure_item(get_source_node_window_tag(self._active_input_channel), show=True)
 
             handler_registry_tag = f"{node_tag}.item_handler_registry"
             with dpg.item_handler_registry(tag=handler_registry_tag) as handler:
@@ -1520,7 +1643,7 @@ class Gui:
 
         with dpg.popup(parent=node_tag, tag=f"{node_tag}.popup", mousebutton=1):
             dpg.add_menu_item(label="Properties", callback=show_properties_window, user_data=obj)
-            if isinstance(obj, (model.FunctionNode, model.ClipInputChannel)):
+            if isinstance(obj, (model.FunctionNode, model.SourceNode)):
                 dpg.add_menu_item(label="Connect To ...", callback=create_and_show_connect_to_window, user_data=(clip, obj))
             if isinstance(obj, model.FunctionCustomNode):
                 dpg.add_menu_item(label="Save", callback=save_custom_node, user_data=obj)
@@ -1538,7 +1661,7 @@ class Gui:
                         dpg.set_value(f"{id_parameter_id}.value", obj.get_parameter("id").value)
                 dpg.add_menu_item(label="Unmap MIDI", callback=unmap_midi, user_data=obj)
             dpg.add_menu_item(label="Map MIDI Output", callback=self.learn_midi_map_node, user_data=(obj, "output"))
-            if isinstance(obj, (model.FunctionNode, model.ClipInputChannel)):
+            if isinstance(obj, (model.FunctionNode, model.SourceNode)):
                 dpg.add_menu_item(label="Delete", callback=self.delete_selected_nodes)
 
     def update_midi_map_node(self, sender, app_data, user_data):
@@ -1771,8 +1894,8 @@ class Gui:
         input_channel = user_data
         input_channel.mode = "armed"
 
-    def create_automation_window(self, clip, input_channel, action):
-        parent = get_automation_window_tag(input_channel)
+    def create_automation_window(self, clip, input_channel):
+        parent = get_source_node_window_tag(input_channel)
         with dpg.window(
             tag=parent,
             label=f"Automation Window",
@@ -1949,6 +2072,48 @@ class Gui:
             dpg.bind_item_theme(ext_value_tag, "bg_line.theme")
             dpg.bind_item_theme(series_tag, "automation_line.theme")
 
+    def create_source_node_window(self, clip, input_channel):
+        parent = get_source_node_window_tag(input_channel)
+        self.tags["hide_on_clip_selection"].append(parent)
+        
+        input_type = input_channel.input_type
+
+        # ColorSource
+        if input_type == "color":
+            def update_color(sender, app_data, user_data):
+                # Update the Channel value
+                self.update_channel_value(sender, app_data, user_data)
+
+                # Update the node's color
+                rgb = [clamp(v*255, 0, 255) for v in app_data]
+                node_theme = get_node_tag(clip, input_channel) + ".theme"
+                dpg.configure_item(f"{node_theme}.color1", value=rgb)
+                dpg.configure_item(f"{node_theme}.color2", value=rgb)
+                dpg.configure_item(f"{node_theme}.color3", value=rgb)
+
+            width = 520
+            height = 520
+            with dpg.window(
+                tag=parent,
+                label=f"Automation Window",
+                width=width,
+                height=height,
+                pos=(799, 18),
+                show=False,
+                no_move=True,
+                no_title_bar=True,
+
+            ) as window:
+                default_color = input_channel.get()
+                node_theme = get_node_tag(clip, input_channel) + ".theme"
+                with dpg.theme(tag=node_theme):
+                    with dpg.theme_component(dpg.mvAll):
+                        dpg.add_theme_color(tag=f"{node_theme}.color1", target=dpg.mvNodeCol_NodeBackground, value=default_color, category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_color(tag=f"{node_theme}.color2", target=dpg.mvNodeCol_NodeBackgroundHovered, value=default_color, category=dpg.mvThemeCat_Nodes)
+                        dpg.add_theme_color(tag=f"{node_theme}.color3", target=dpg.mvNodeCol_NodeBackgroundSelected, value=default_color, category=dpg.mvThemeCat_Nodes)
+                dpg.bind_item_theme(get_node_tag(clip, input_channel), node_theme)
+                dpg.add_color_picker(width=height*0.8, height=height, callback=update_color, user_data=input_channel, default_value=default_color)
+
     def set_quantize(self, sender, app_data, user_data):
         self._quantize_amount = user_data
         self.reset_automation_plot(self._active_input_channel)
@@ -1971,7 +2136,7 @@ class Gui:
         self.reset_automation_plot(self._active_input_channel)
 
     def reset_automation_plot(self, input_channel):
-        window_tag = get_automation_window_tag(input_channel)
+        window_tag = get_source_node_window_tag(input_channel)
         automation = input_channel.active_automation
         series_tag = f"{input_channel.id}.series"
         plot_tag = get_plot_tag(input_channel)
@@ -2302,7 +2467,7 @@ class Gui:
         if isinstance(obj, model.Channel):
             # Input Nodes (also need to delete automation window)
             channels_to_delete = [obj]
-            automation_window_tag = get_automation_window_tag(obj_id, is_id=True)
+            automation_window_tag = get_source_node_window_tag(obj_id, is_id=True)
             if automation_window_tag in all_aliases:
                 dpg.delete_item(automation_window_tag)
 
@@ -2435,11 +2600,11 @@ class Gui:
             for obj in self.copy_buffer:
                 if isinstance(obj, str):
                     link_ids.append(obj)
-                elif isinstance(obj, model.ClipInputChannel):
+                elif isinstance(obj, model.SourceNode):
                     result = self.execute_wrapper(f"duplicate_node {self._active_clip.id} {obj.id}")
                     if result.success:
                         new_input_channel = result.payload
-                        self.add_input_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_input_channel), False))
+                        self.add_source_node(sender=None, app_data=None, user_data=("restore", (self._active_clip, new_input_channel), False))
                         self.copy_node_position(self._active_clip, obj, self._active_clip, new_input_channel)
                         duplicate_map[obj.id] = new_input_channel
                     else:
@@ -2592,7 +2757,7 @@ class Gui:
 
 
         # Update automation points
-        if valid(self._active_input_channel) and valid(self._active_input_channel.active_automation):
+        if valid(self._active_input_channel) and isinstance(self._active_input_channel, model.AutomatableSourceNode) and valid(self._active_input_channel.active_automation):
             automation = self._active_input_channel.active_automation
             values = sorted(
                 zip(automation.values_x, automation.values_y), 
@@ -2616,7 +2781,7 @@ class Gui:
 
         # Set the play heads to the correct position
         if valid(self._active_clip, self._active_input_channel):
-            if valid(self._active_input_channel.active_automation):
+            if isinstance(self._active_input_channel, model.AutomatableSourceNode) and valid(self._active_input_channel.active_automation):
                 playhead_tag = f"{self._active_input_channel.id}.gui.playhead"
                 ext_value_tag = f"{self._active_input_channel.id}.gui.ext_value"
                 playhead_color = {
@@ -2711,7 +2876,7 @@ class Gui:
         mouse_pos = dpg.get_mouse_pos()
 
         if app_data == 0:
-            if window_tag is not None and window_tag.endswith("automation_window"):
+            if window_tag is not None and window_tag.endswith(".source_node_window"):
                 plot_mouse_pos = dpg.get_plot_mouse_pos()
                 automation = self._active_input_channel.active_automation
                 for i, x in enumerate(automation.values_x):
@@ -2741,7 +2906,7 @@ class Gui:
         key = chr(key_n)
         #print(key_n)
         if key == " ":
-            self.state.toggle_play()
+            self.toggle_play_callback()
         elif key_n in [8, 46] and self.node_editor_window_is_focused and self.ctrl:
             self.delete_selected_nodes()
         elif key_n in [120]:
@@ -2758,15 +2923,15 @@ class Gui:
         elif key in ["I"]:
             if self.ctrl and self.shift:
                 if self._active_clip:
-                    self.add_input_node(None, None,( "create", (self._active_clip, "int"), False))
+                    self.add_source_node(None, None,( "create", (self._active_clip, "int"), False))
         elif key in ["B"]:
             if self.ctrl and self.shift:
                 if self._active_clip:
-                    self.add_input_node(None, None, ("create", (self._active_clip, "bool"), False))
+                    self.add_source_node(None, None, ("create", (self._active_clip, "bool"), False))
         elif key in ["F"]:
             if self.ctrl and self.shift:
                 if self._active_clip:
-                    self.add_input_node(None, None, ("create", (self._active_clip, "float"), False))
+                    self.add_source_node(None, None, ("create", (self._active_clip, "float"), False))
         elif key in ["T"]:
             if self.state.mode == "performance":
                 self.tap_tempo()
