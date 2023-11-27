@@ -13,6 +13,9 @@ from pythonosc import osc_server
 import threading 
 import mido
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 # For Custom Fuction Nodes
 import colorsys
@@ -40,7 +43,7 @@ def update_name(name, other_names):
         if match:
             prefix, number = match.groups()
             if not number:
-                number = 1
+                number = 0
             else:
                 number = int(number)
             return prefix, number
@@ -222,6 +225,7 @@ class Parameterized(Identifier):
         parameters_data = data["parameters"]
         for i, parameter_data in enumerate(parameters_data):
             self.parameters[i].deserialize(parameter_data)
+            self.update_parameter(i, str(self.parameters[i].value))
 
 
 class SourceNode(Parameterized):
@@ -256,6 +260,24 @@ class SourceNode(Parameterized):
 
     def get(self):
         return self.channel.get()
+
+    def serialize(self):
+        data = super().serialize()
+
+        data.update({
+            "name": self.name,
+            "channel": self.channel.serialize(),
+            "input_type": self.input_type,
+        })
+
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+
+        self.name = data["name"]
+        self.channel.deserialize(data["channel"])
+        self.input_type = data["input_type"]
 
 
 class AutomatableSourceNode(SourceNode):
@@ -355,10 +377,7 @@ class AutomatableSourceNode(SourceNode):
         data = super().serialize()
         
         data.update({
-            "name": self.name,
-            "channel": self.channel.serialize(),
             "ext_channel": self.ext_channel.serialize(),
-            "input_type": self.input_type,
             "mode": self.mode,
             "active_automation": self.active_automation.id if self.active_automation else None,
             "automations": [automation.serialize() for automation in self.automations if not automation.deleted],
@@ -370,10 +389,7 @@ class AutomatableSourceNode(SourceNode):
     def deserialize(self, data):
         super().deserialize(data)
 
-        self.name = data["name"]
-        self.channel.deserialize(data["channel"])
         self.ext_channel.deserialize(data["ext_channel"])
-        self.input_type = data["input_type"]
         self.mode = data["mode"]
         self.speed = data["speed"]
 
@@ -462,6 +478,42 @@ class ColorNode(SourceNode):
         kwargs.setdefault("size", 3)
         super().__init__(**kwargs) 
         self.input_type = "color"
+        self.int_out_parameter = Parameter("Int", value=False, dtype="bool")
+        self.add_parameter(self.int_out_parameter)
+
+    def set(self, value):
+        if self.int_out_parameter.value:
+            value = [int(255*v) for v in value]
+        self.channel.set(value)
+
+    def update_parameter(self, index, value):
+        if self.parameters[index] == self.int_out_parameter:
+            self.parameters[index].value = value.lower() == "true"
+            return True
+        else:
+            return super().update_parameter(index, value)
+
+
+class ButtonNode(SourceNode):
+    nice_title = "Button"
+
+    def __init__(self, **kwargs):
+        kwargs.setdefault("dtype", "bool")
+        kwargs.setdefault("size", 1)
+        super().__init__(**kwargs) 
+        self.input_type = "button"
+        self.value_parameter = Parameter("Value", value=False, dtype="bool")
+        self.add_parameter(self.value_parameter)
+
+    def update(self, clip_beat):
+        self.channel.set(int(self.value_parameter.value))
+
+    def update_parameter(self, index, value):
+        if self.parameters[index] == self.value_parameter:
+            self.parameters[index].value = value.lower() == "true"
+            return True
+        else:
+            return super().update_parameter(index, value)
 
 
 class OscInput(AutomatableSourceNode):
@@ -523,6 +575,9 @@ class ChannelLink(Identifier):
 
     def update(self):
         self.dst_channel.set(self.src_channel.get())
+
+    def contains(self, channel):
+        return self.src_channel == channel or self.dst_channel == channel
 
     def serialize(self):
         data = super().serialize()
@@ -977,7 +1032,7 @@ class FunctionLastChanged(FunctionNode):
 
         self.outputs.append(Channel(direction="out", dtype="int", name=f"out{self.n}"))
         self.type = "last_changed"
-        self._last_values = [None]*n
+        self._last_values = [None] * self.n
         self._last_changed_index = 0
 
     def transform(self):
@@ -1085,14 +1140,35 @@ class FunctionSample(FunctionNode):
             self.outputs[0].set(self.inputs[1].get())
 
 
+class FunctionSampleTrigger(FunctionNode):
+    nice_title = "Sample Trigger"
+
+    def __init__(self, args="", name="Sample Trigger"):
+        super().__init__(args, name)
+        self.inputs = [
+            Channel(direction="in", value=1, name=f"trigger", dtype="bool"),
+            Channel(direction="in", value=0, name=f"in", dtype="float")
+        ]
+        self.outputs.append(
+            Channel(direction="out", value=0, name=f"out", dtype="float")
+        )
+        self.type = "sample_trigger"
+        self._last_value = 0
+
+    def transform(self):
+        trigger = self.inputs[0].get()
+        if trigger != self._last_value and trigger:
+            self.outputs[0].set(self.inputs[1].get())
+        self._last_value = trigger
+
+
 class FunctionBuffer(FunctionNode):
     nice_title = "Buffer"
 
     def __init__(self, args="", name="Buffer"):
         super().__init__(args, name)
-        self.n_parameter = Parameter("n", value=60)
-        self.add_parameter(self.n_parameter)
         self.inputs = [
+            Channel(direction="in", name=f"n", dtype="int"),
             Channel(direction="in", name=f"in", dtype="any")
         ]
         self.outputs.append(
@@ -1103,27 +1179,26 @@ class FunctionBuffer(FunctionNode):
         self._buffer = []
 
     def transform(self):
-        self._buffer.insert(0, self.inputs[0].get())
-        self.outputs[0].set(self._buffer.pop())
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.n_parameter:
-            try:
-                value = int(value)
-            except Exception as e:
-                print(e)
-                return False
-
-            container_value = self.inputs[0].get()
-            if isinstance(container_value, list):
-                reset_value = [0] * len(container_value)
+        n = self.inputs[0].get()
+        cur_value = self.inputs[1].get()
+        n_buf = len(self._buffer)
+        
+        if n <= 0:
+            self.outputs[0].set(cur_value)
+            return
+        elif n_buf != n:
+            if isinstance(cur_value, list):
+                reset_value = [0] * len(cur_value)
             else:
                 reset_value = 0
 
-            self._buffer = [reset_value] * value
-            return True
-        else:
-            return super().update_parameter(index, value)
+            if n_buf < n:
+                self._buffer.extend([reset_value] * (n - n_buf))
+            else:
+                self._buffer = self._buffer[0:n]
+
+        self._buffer.insert(0, cur_value)
+        self.outputs[0].set(self._buffer.pop())
 
 
 class FunctionCanvas1x8(FunctionNode):
@@ -1231,6 +1306,7 @@ FUNCTION_TYPES = {
     "separator": FunctionSeparator,
     "random": FunctionRandom,
     "sample": FunctionSample,
+    "sample_trigger": FunctionSampleTrigger,
     "buffer": FunctionBuffer,
     "canvas1x8": FunctionCanvas1x8,
     "pixelmover1": FunctionPixelMover1,
@@ -1342,7 +1418,11 @@ class ChannelAutomation(Identifier):
         if self.f is None:
             v = 0
         else:
-            v = self.f(beat_time % self.length)
+            try:
+                v = self.f(beat_time % self.length)
+            except Exception as e:
+                logger.warning(e)
+                v = 0
         if self.dtype == "bool":
             return int(v > 0.5)
         elif self.dtype == "int":
@@ -1401,8 +1481,13 @@ class ChannelAutomation(Identifier):
         self.reinterpolate()
 
     def reinterpolate(self):
-        values_x = [x for x in self.values_x if x is not None]
-        values_y = [y for y in self.values_y if y is not None]
+        values_x = []
+        values_y = []
+        for i, x in enumerate(self.values_x):
+            if x is not None and x not in values_x:
+                values_x.append(x)
+                values_y.append(self.values_y[i])
+
         self.f = scipy.interpolate.interp1d(
             values_x, 
             values_y, 
@@ -1448,6 +1533,33 @@ class ChannelAutomation(Identifier):
         self.set_length(data["length"])
 
 
+class ClipPreset(Identifier):
+    def __init__(self, name=None, presets=None):
+        super().__init__()
+        self.name = name
+        self.presets = presets or []
+
+    def execute(self):
+        for preset in self.presets:
+            channel, automation = preset
+            channel.set_active_automation(automation)
+
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "presets": [f"{channel.id}:{automation.id}" for channel, automation in self.presets]
+        })
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        for preset_ids in data["presets"]:
+            channel_id, automation_id = preset_ids.split(":")
+            self.presets.append((UUID_DATABASE[channel_id], UUID_DATABASE[automation_id]))
+
+
 class Clip(Identifier):
     def __init__(self, outputs=[]):
         super().__init__()
@@ -1456,6 +1568,7 @@ class Clip(Identifier):
         self.inputs = []
         self.outputs = outputs
         self.node_collection = NodeCollection()
+        self.presets = []
 
         # Speed to play clip
         self.speed = 0
@@ -1464,17 +1577,23 @@ class Clip(Identifier):
 
         self.playing = False
 
+
     def create_source(self, input_type):
         if input_type.startswith("osc_input"):
             input_type = input_type.replace("osc_input_", "")
-            new_source = OscInput(dtype=input_type)
+            name = update_name("OSC", [obj.name for obj in self.inputs])
+            new_source = OscInput(name=name, dtype=input_type)
         elif input_type == "midi":
-            new_source = MidiInput()
+            name = update_name("MIDI", [obj.name for obj in self.inputs])
+            new_source = MidiInput(name=name)
         elif input_type == "color":
             name = update_name("Color", [obj.name for obj in self.inputs])
             new_source = ColorNode(name=name)
+        elif input_type == "button":
+            name = update_name("Button", [obj.name for obj in self.inputs])
+            new_source = ButtonNode(name=name)
         else:
-            name = update_name("In", [obj.name for obj in self.inputs])
+            name = update_name("Input", [obj.name for obj in self.inputs])
             new_source = AutomatableSourceNode(dtype=input_type, name=name)
         self.inputs.append(new_source)
         return new_source
@@ -1502,6 +1621,11 @@ class Clip(Identifier):
         else:
             self.start()
 
+    def add_preset(self, preset_name, presets):
+        clip_preset = ClipPreset(preset_name, presets)
+        self.presets.append(clip_preset)
+        return clip_preset
+
     def serialize(self):
         data = super().serialize()
         data.update({
@@ -1510,6 +1634,7 @@ class Clip(Identifier):
             "inputs": [channel.serialize() for channel in self.inputs if not channel.deleted],
             "outputs": [channel.serialize() for channel in self.outputs if not channel.deleted],
             "node_collection": self.node_collection.serialize(),
+            "presets": [preset.serialize() for preset in self.presets if not preset.deleted]
         })
 
         return data
@@ -1524,16 +1649,25 @@ class Clip(Identifier):
         for input_data in data["inputs"]:
             if input_data["input_type"] in cast.keys():
                 channel = AutomatableSourceNode()
-                channel.deserialize(input_data)
             elif input_data["input_type"].startswith("osc_input_"):
                 channel = OscInput()
-                channel.deserialize(input_data)
             elif input_data["input_type"] == "midi":
                 channel = MidiInput()
-                channel.deserialize(input_data)
+            elif input_data["input_type"] == "color":
+                channel = ColorNode()
+            elif input_data["input_type"] == "button":
+                channel = ButtonNode()
+            else:
+                raise RuntimeError("Failed to find node type")
+            channel.deserialize(input_data)
             self.inputs.append(channel)
 
         self.node_collection.deserialize(data["node_collection"])
+
+        for preset_data in data["presets"]:
+            clip_preset = ClipPreset()
+            clip_preset.deserialize(preset_data)
+            self.presets.append(clip_preset)
 
 
 class Track(Identifier):
@@ -1611,7 +1745,6 @@ class Track(Identifier):
             output.deserialize(output_data)
             self.outputs.append(output)
 
-
         for i, clip_data in enumerate(data["clips"]):
             if clip_data is None:
                 continue
@@ -1622,11 +1755,18 @@ class Track(Identifier):
 
 class IO:
     type = None
-    def __init__(self, arg_string):
-        self.arg_string = arg_string
+    def __init__(self, args):
+        self.args = args
+        logger.debug("Created %s(%s)", self.type, self.args)
 
     def update(self, outputs):
         raise NotImplemented
+
+    def serialize(self):
+        return {"type": self.type, "args": self.args}
+
+    def deserialize(self, data):
+        pass
 
 
 class EthernetDmxOutput(IO):
@@ -1634,12 +1774,12 @@ class EthernetDmxOutput(IO):
     arg_template = "host:port"
     type = "ethernet_dmx"
 
-    def __init__(self, host_port):
-        super().__init__(host_port)
-        self.host, self.port = host_port.split(":")
+    def __init__(self, args):
+        super().__init__(args)
+        self.host, self.port = args.split(":")
         self.port = int(self.port)
         self.dmx_connection = dmxio.DmxConnection((self.host, self.port))
-        self.dmx_frame = [1] * 512
+        self.dmx_frame = [0] * 512
 
     def update(self, outputs):
         for output_channel in outputs:
@@ -1661,8 +1801,38 @@ class EthernetDmxOutput(IO):
         except Exception as e:
             raise e
 
-    def __str__(self):
-        return f"NodeDmxClient({self.host}:{self.port})"
+
+class NodeDmxClientOutput(IO):
+    nice_title = "Node DMX Client"
+    arg_template = "host:port"
+    type = "node_dmx_client"
+
+    def __init__(self, args):
+        super().__init__(args)
+        self.host, self.port = args.split(":")
+        self.port = int(self.port)
+        self.dmx_client = dmxio.NodeDmxClient((self.host, self.port), 1, 512)
+        self.dmx_frame = [0] * 512
+
+    def update(self, outputs):
+        for output_channel in outputs:
+            if output_channel.deleted:
+                continue
+
+            channels = []
+            if isinstance(output_channel, DmxOutputGroup):
+                channels.extend(output_channel.outputs)
+            else:
+                channels = [output_channel]
+
+            for channel in channels:
+                self.dmx_frame[channel.dmx_address-1] = min(255, max(0, int(round(channel.get()))))
+
+        try:
+            self.dmx_client.set_channels(1, self.dmx_frame)
+            self.dmx_client.send_frame()
+        except Exception as e:
+            raise e
 
 
 class OscServerInput(IO):
@@ -1670,20 +1840,19 @@ class OscServerInput(IO):
     arg_template = "port"
     type = "osc_server"
 
-    def __init__(self):
-        super().__init__(arg_string="")
+    def __init__(self, args):
+        super().__init__(args)
+        self.port = int(args)
         self.host = "127.0.0.1"
         self.dispatcher = Dispatcher()
 
-    def start(self, port):
-        self.server = osc_server.ThreadingOSCUDPServer((self.host, port), self.dispatcher)
+        self.server = osc_server.ThreadingOSCUDPServer((self.host, self.port), self.dispatcher)
 
         def start_osc_listening_server():
             print("OSCServer started on {}".format(self.server.server_address))
             self.server.serve_forever()
             print("OSC Server Stopped")
 
-        self.arg_string = str(port)
         self.thread = threading.Thread(target=start_osc_listening_server)
         self.thread.daemon = True
         self.thread.start()
@@ -1708,11 +1877,11 @@ class MidiInputDevice(IO):
     arg_template = "name"
     type = "midi_input"
 
-    def __init__(self, device_name):
-        super().__init__(arg_string=device_name)
-        self.device_name = device_name
-        assert device_name in mido.get_input_names()
-        self.port = mido.open_input(device_name, callback=self.callback)
+    def __init__(self, args):
+        super().__init__(args)
+        self.device_name = args
+        assert self.device_name in mido.get_input_names()
+        self.port = mido.open_input(self.device_name, callback=self.callback)
         self.channel_map = defaultdict(lambda: defaultdict(list))
 
     def map_channel(self, midi_channel, note_control, channel):
@@ -1741,17 +1910,33 @@ class MidiInputDevice(IO):
             for channel in self.channel_map[midi_channel][note_control]:
                 channel.ext_set(value)
 
+    def serialize(self):
+        data = super().serialize()
+        data["channel_map"] = {}
+        for midi_channel, note_controls in self.channel_map.items():
+            data["channel_map"][midi_channel] = {}
+            for note_control, channels in note_controls.items():
+                data["channel_map"][midi_channel][note_control] = [channel.id for channel in channels]
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        for midi_channel, note_controls in data["channel_map"].items():
+            for note_control, channels in note_controls.items():
+                for channel_id in channels:
+                    self.map_channel(int(midi_channel), int(note_control), UUID_DATABASE[channel_id])
+
 
 class MidiOutputDevice(IO):
     nice_title = "MIDI (Output)"
     arg_template = "name"
     type = "midi_output"
 
-    def __init__(self, device_name):
-        super().__init__(arg_string=device_name)
-        self.device_name = device_name
-        assert device_name in mido.get_output_names()
-        self.port = mido.open_output(device_name)
+    def __init__(self, args):
+        super().__init__(args)
+        self.device_name = args
+        assert self.device_name in mido.get_output_names()
+        self.port = mido.open_output(self.device_name)
         self.channel_map = {}
         self.port.reset()
 
@@ -1764,28 +1949,47 @@ class MidiOutputDevice(IO):
     def map_channel(self, midi_channel, note_control, channel):
         self.channel_map[(midi_channel, note_control)] = channel
 
+    def unmap_channel(self, channel):
+        for (midi_channel, note_control), other_channel in self.channel_map.items():
+            if channel == other_channel:
+                del self.channel_map[(midi_channel, note_control)]
+                self.port.send(mido.Message("note_off", channel=midi_channel, note=note_control, velocity=0))
+                break
 
-IO_OUTPUTS = [None] * 5
-IO_INPUTS = [OscServerInput(), None, None, None, None] 
+    def serialize(self):
+        data = super().serialize()
+        data["channel_map"] = {
+            f"{midi_channel}:{note_control}": channel.id
+            for (midi_channel, note_control), channel in self.channel_map.items()
+        }
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        for key, channel_id in data["channel_map"].items():
+            midi_channel, note_control = key.split(":")
+            self.map_channel(int(midi_channel), int(note_control), UUID_DATABASE[channel_id])
+
+
 N_TRACKS = 6
 
 OSC_SERVER_INDEX = 0
 def global_osc_server():
-    if OSC_SERVER_INDEX is not None:
-        return IO_INPUTS[OSC_SERVER_INDEX]
+    return _STATE.io_inputs[OSC_SERVER_INDEX]
 
 LAST_MIDI_MESSAGE = None
 MIDI_INPUT_DEVICES = {}
 MIDI_OUTPUT_DEVICES = {}
 def global_midi_control(device_name, in_out):
     if in_out == "in":
-        print(MIDI_INPUT_DEVICES, device_name, in_out)
         return MIDI_INPUT_DEVICES.get(device_name)
     else:
         return MIDI_OUTPUT_DEVICES.get(device_name)        
 
 def global_unmap_midi(obj):
     for midi_device in MIDI_INPUT_DEVICES.values():
+        midi_device.unmap_channel(obj)
+    for midi_device in MIDI_OUTPUT_DEVICES.values():
         midi_device.unmap_channel(obj)
 
 
@@ -1808,12 +2012,14 @@ class ProgramState(Identifier):
         for i in range(N_TRACKS):
             self.tracks.append(Track(f"Track {i}"))
 
+        self.io_outputs = [None] * 5
+        self.io_inputs = [None] * 5 
+
         self.playing = False
         self.tempo = 120.0
         self.play_time_start_s = 0
         self.time_since_start_beat = 0
         self.time_since_start_s = 0
-        self.all_track_outputs = []
 
     def toggle_play(self):
         if self.playing:
@@ -1823,10 +2029,6 @@ class ProgramState(Identifier):
             self.play_time_start_s = time.time()
 
     def update(self):
-        global IO_OUTPUTS
-        global IO_INPUTS
-        global OSC_SERVER_INDEX
-
         # Update timing
         if self.playing:
             self.time_since_start_s = time.time() - self.play_time_start_s
@@ -1837,20 +2039,22 @@ class ProgramState(Identifier):
                 track.update(self.time_since_start_beat)
 
             # Update DMX outputs
-            for io_output in IO_OUTPUTS:
+            all_track_outputs = []
+            for track in self.tracks:
+                all_track_outputs.extend(track.outputs)
+            for io_output in self.io_outputs:
                 if io_output is not None:
-                    io_output.update(self.all_track_outputs)
+                    io_output.update(all_track_outputs)
 
     def serialize(self):
         data = {
             "tempo": self.tempo,
             "project_name": self.project_name,
             "project_filepath": self.project_filepath,
-            "tracks": []
+            "tracks": [track.serialize() for track in self.tracks],
+            "io_inputs": [None if device is None else device.serialize() for device in self.io_inputs],
+            "io_outputs": [None if device is None else device.serialize() for device in self.io_outputs],
         }
-
-        for track in self.tracks:
-            data["tracks"].append(track.serialize())
 
         return data
 
@@ -1864,6 +2068,24 @@ class ProgramState(Identifier):
             new_track.deserialize(track_data)
             self.tracks[i] = new_track
 
+        for device_data in data["io_inputs"]:
+            if device_data is None:
+                continue
+            device = IO_TYPES[device_data["type"]](device_data["args"])
+            device.deserialize(device_data)
+            self.io_inputs.append(device)
+            if isinstance(device, MidiInputDevice):
+                MIDI_INPUT_DEVICES[device.device_name] = device
+
+        for device_data in data["io_outputs"]:
+            if device_data is None:
+                continue
+            device = IO_TYPES[device_data["type"]](device_data["args"])
+            device.deserialize(device_data)
+            self.io_outputs.append(device)
+            if isinstance(device, MidiOutputDevice):
+                MIDI_OUTPUT_DEVICES[device.device_name] = device
+
     def duplicate_obj(self, obj):
         data = obj.serialize()
         new_data = new_ids(data)
@@ -1872,251 +2094,275 @@ class ProgramState(Identifier):
         return new_obj
 
     def execute(self, full_command):
-        global IO_OUTPUTS
-        global IO_INPUTS
-        global OSC_SERVER_INDEX
         global MIDI_INPUT_DEVICES
         global MIDI_OUTPUT_DEVICES
-        print(full_command)
+        logger.info(full_command)
+
+        allowed_performance_commands = [
+            "set_active_automation",
+            "toggle_clip",
+            "update_parameter"
+        ]
 
         toks = full_command.split()
         cmd = toks[0]
         
         if self.mode == "performance":
-            if cmd == "toggle_clip":
-                track_id = toks[1]
-                clip_id = toks[2]
-                track = self.get_obj(track_id)
-                clip = self.get_obj(clip_id)
-                for other_clip in track.clips:
-                    if other_clip is None or clip == other_clip:
-                        continue
-                    other_clip.stop()
-                clip.toggle()
-                if clip.playing:
-                    self.playing = True
-                return Result(True)
+            if cmd not in allowed_performance_commands:
+                return Result(False)
 
-        else: # edit mode
+        if cmd == "toggle_clip" and self.mode == "performance":
+            track_id = toks[1]
+            clip_id = toks[2]
+            track = self.get_obj(track_id)
+            clip = self.get_obj(clip_id)
+            for other_clip in track.clips:
+                if other_clip is None or clip == other_clip:
+                    continue
+                other_clip.stop()
+            clip.toggle()
+            if clip.playing:
+                self.playing = True
+            return Result(True)
 
-            if cmd == "new_clip":
-                track_id, clip_i = toks[1].split(",")
-                clip_i = int(clip_i)
-                track = self.get_obj(track_id)
-                assert clip_i < len(track.clips)
-                track[clip_i] = Clip(track.outputs)
-                return Result(True, track[clip_i])
+        elif cmd == "new_clip":
+            track_id, clip_i = toks[1].split(",")
+            clip_i = int(clip_i)
+            track = self.get_obj(track_id)
+            assert clip_i < len(track.clips)
+            track[clip_i] = Clip(track.outputs)
+            return Result(True, track[clip_i])
 
-            elif cmd == "create_source":
-                clip_id = toks[1]
-                input_type = toks[2]
-                clip = self.get_obj(clip_id)
-                new_input_channel = clip.create_source(input_type)
-                return Result(True, new_input_channel)
+        elif cmd == "create_source":
+            clip_id = toks[1]
+            input_type = toks[2]
+            clip = self.get_obj(clip_id)
+            new_input_channel = clip.create_source(input_type)
+            return Result(True, new_input_channel)
 
-            elif cmd == "create_output":
-                track_id = toks[1]
-                track = self.get_obj(track_id)
-                address = int(toks[2])
-                new_output_channel = track.create_output(address)
-                self.all_track_outputs.append(new_output_channel)
-                return Result(True, new_output_channel)
+        elif cmd == "create_output":
+            track_id = toks[1]
+            track = self.get_obj(track_id)
+            address = int(toks[2])
+            new_output_channel = track.create_output(address)
+            return Result(True, new_output_channel)
 
-            elif cmd == "create_output_group":
-                track_id = toks[1]
-                track = self.get_obj(track_id)
-                address = int(toks[2])
-                channel_names = full_command.split(" ", 3)[-1].split(',')
-                new_output_group = track.create_output_group(address, channel_names)
-                self.all_track_outputs.append(new_output_group)
-                return Result(True, new_output_group)
+        elif cmd == "create_output_group":
+            track_id = toks[1]
+            track = self.get_obj(track_id)
+            address = int(toks[2])
+            channel_names = full_command.split(" ", 3)[-1].split(',')
+            new_output_group = track.create_output_group(address, channel_names)
+            return Result(True, new_output_group)
 
-            elif cmd == "create_link":
-                clip_id = toks[1]
-                src_id = toks[2]
-                dst_id = toks[3]
-                clip = self.get_obj(clip_id)
-                src_channel = self.get_obj(src_id)
-                dst_channel = self.get_obj(dst_id)
-                return Result(clip.node_collection.add_link(src_channel, dst_channel))
+        elif cmd == "create_link":
+            clip_id = toks[1]
+            src_id = toks[2]
+            dst_id = toks[3]
+            clip = self.get_obj(clip_id)
+            src_channel = self.get_obj(src_id)
+            dst_channel = self.get_obj(dst_id)
+            return Result(clip.node_collection.add_link(src_channel, dst_channel))
 
-            elif cmd == "delete_link":
-                clip_id = toks[1]
-                src_id = toks[2]
-                dst_id = toks[3]
+        elif cmd == "delete_node":
+            # TODO: Not using clip 
+            clip_id = toks[1]
+            obj_id = toks[2]
+            obj = self.get_obj(obj_id)
+            obj.deleted = True
+            return Result(True)
 
-                clip = self.get_obj(clip_id)
-                src_channel = self.get_obj(src_id)
-                dst_channel = self.get_obj(dst_id)
-                return Result(clip.node_collection.del_link(src_channel, dst_channel))
+        elif cmd == "delete_link":
+            clip_id = toks[1]
+            src_id = toks[2]
+            dst_id = toks[3]
 
-            elif cmd == "create_node":
-                # resplit
-                toks = full_command.split(" ", 3)
-                clip_id = toks[1]
-                type_id = toks[2]
-                args = toks[3] or None
+            clip = self.get_obj(clip_id)
+            src_channel = self.get_obj(src_id)
+            dst_channel = self.get_obj(dst_id)
+            return Result(clip.node_collection.del_link(src_channel, dst_channel))
 
-                clip = self.get_obj(clip_id)
+        elif cmd == "create_node":
+            # resplit
+            toks = full_command.split(" ", 3)
+            clip_id = toks[1]
+            type_id = toks[2]
+            args = toks[3] or None
 
-                if type_id == "none":
-                    node = clip.node_collection.add_node(None, None)
-                else:
-                    node = clip.node_collection.add_node(FUNCTION_TYPES[type_id], args)
-                return Result(True, node)
+            clip = self.get_obj(clip_id)
 
-            elif cmd == "delete":
-                obj_id = toks[1]
-                obj = self.get_obj(obj_id)
-                if obj.deleted:
-                    return Result(False)
-                obj.deleted = True
-                return Result(True)
+            if type_id == "none":
+                node = clip.node_collection.add_node(None, None)
+            else:
+                node = clip.node_collection.add_node(FUNCTION_TYPES[type_id], args)
+            return Result(True, node)
 
-            elif cmd == "set_active_automation":
-                input_id = toks[1]
-                automation_id = toks[2]
-                input_channel = self.get_obj(input_id)
-                automation = self.get_obj(automation_id)
-                input_channel.set_active_automation(automation)
-                return Result(True) 
+        elif cmd == "delete":
+            obj_id = toks[1]
+            obj = self.get_obj(obj_id)
+            if obj.deleted:
+                return Result(False)
+            obj.deleted = True
+            return Result(True)
 
-            elif cmd == "add_automation":
-                input_id = toks[1]
-                input_channel = self.get_obj(input_id)
-                return Result(True, input_channel.add_automation())
+        elif cmd == "set_active_automation":
+            input_id = toks[1]
+            automation_id = toks[2]
+            input_channel = self.get_obj(input_id)
+            automation = self.get_obj(automation_id)
+            input_channel.set_active_automation(automation)
+            return Result(True) 
 
-            elif cmd == "add_automation_point":
-                automation_id = toks[1]
-                point = toks[2]
-                automation = self.get_obj(automation_id)
-                automation.add_point([float(x) for x in point.split(",")])
-                return Result(True)
+        elif cmd == "add_automation":
+            input_id = toks[1]
+            input_channel = self.get_obj(input_id)
+            return Result(True, input_channel.add_automation())
 
-            elif cmd == "update_automation_point":
-                automation_id = toks[1]
-                point_index = toks[2]
-                point = toks[3]
-                automation = self.get_obj(automation_id)
-                automation.update_point(
-                    int(point_index), [float(x) for x in point.split(",")]
-                )
-                return Result(True)
+        elif cmd == "add_clip_preset":
+            clip_id = toks[1]
+            preset_ids = toks[2].split(",")
+            preset_name = " ".join(toks[3:])
+            clip = self.get_obj(clip_id)
 
-            elif cmd == "update_parameter":
-                # resplit
-                toks = full_command.split(" ", 3)
-                obj_id = toks[1]
-                param_i = toks[2]
-                if len(toks) <= 3:
-                    return
-                value = toks[3]
-                node = self.get_obj(obj_id)
-                result = node.update_parameter(int(param_i), value)
-                if isinstance(result, tuple):
-                    return Result(result[0], result[1])
-                else:
-                    return Result(result)
+            presets = []
+            for preset_id in preset_ids:
+                channel_id, automation_id = preset_id.split(":")
+                presets.append((self.get_obj(channel_id), self.get_obj(automation_id)))
+            preset = clip.add_preset(preset_name, presets)
+            return Result(True, preset)
 
-            elif cmd == "update_channel_value":
-                input_id = toks[1]
-                value = " ".join(toks[2:])
-                try:
-                    value = eval(value)
-                except:
-                    print(f"Failed to evaluate {value}")
-                    return Result(False)
-                input_channel = self.get_obj(input_id)
-                value = cast[input_channel.dtype](value)
-                input_channel.set(value)
-                return Result(True)
+        elif cmd == "add_automation_point":
+            automation_id = toks[1]
+            point = toks[2]
+            automation = self.get_obj(automation_id)
+            automation.add_point([float(x) for x in point.split(",")])
+            return Result(True)
 
-            elif cmd == "remove_automation_point":
-                src = toks[1]
-                point_index = toks[2]
-                input_channel = self.get_obj(src)
-                automation = input_channel.active_automation
-                return Result(automation.remove_point(int(point_index)))
+        elif cmd == "update_automation_point":
+            automation_id = toks[1]
+            point_index = toks[2]
+            point = toks[3]
+            automation = self.get_obj(automation_id)
+            automation.update_point(
+                int(point_index), [float(x) for x in point.split(",")]
+            )
+            return Result(True)
 
-            elif cmd == "create_io":
-                index = int(toks[1])
-                input_output = toks[2]
-                io_type = toks[3]
-                args = toks[4::]
-                args = " ".join(args)
-                IO_LIST = IO_OUTPUTS if input_output == "outputs" else IO_INPUTS
-                MIDI_LIST = MIDI_OUTPUT_DEVICES if input_output == "outputs" else MIDI_INPUT_DEVICES
-                try:
-                    if io_type == "ethernet_dmx":
-                        IO_LIST[index] = EthernetDmxOutput(args)
-                        return Result(True, IO_LIST[index])
-                    elif io_type == "osc_server":
-                        # TODO: Only allow one
-                        IO_LIST[index].start(int(args))
-                        return Result(True, IO_LIST[index])
-                    elif io_type == "midi_input":
-                        IO_LIST[index] = MidiInputDevice(args)
-                        MIDI_LIST[args] = IO_LIST[index]
-                        self._map_all_midi_inputs()
-                        self._map_all_midi_inputs()
-                        return Result(True, IO_LIST[index])
-                    elif io_type == "midi_output":
-                        IO_LIST[index] = MidiOutputDevice(args)
-                        MIDI_LIST[args] = IO_LIST[index]
-                        return Result(True, IO_LIST[index])
-                except Exception as e:
-                    print(e)
-                    return Result(False, None)
+        elif cmd == "update_parameter":
+            # resplit
+            toks = full_command.split(" ", 3)
+            obj_id = toks[1]
+            param_i = toks[2]
+            if len(toks) <= 3:
+                return
+            value = toks[3]
+            node = self.get_obj(obj_id)
+            result = node.update_parameter(int(param_i), value)
+            if isinstance(result, tuple):
+                return Result(result[0], result[1])
+            else:
+                return Result(result)
 
-            elif cmd == "duplicate_clip":
-                new_track_i = int(toks[1])
-                new_clip_i = int(toks[2])
-                clip_id = toks[3]
+        elif cmd == "update_channel_value":
+            input_id = toks[1]
+            value = " ".join(toks[2:])
+            try:
+                value = eval(value)
+            except:
+                print(f"Failed to evaluate {value}")
+                return Result(False)
+            input_channel = self.get_obj(input_id)
+            value = cast[input_channel.dtype](value)
+            input_channel.set(value)
+            return Result(True)
 
-                new_track = self.tracks[int(new_track_i)]
-                new_track_ptr = f"*track[{new_track_i}]"
-                old_clip = self.get_obj(clip_id)
-                new_clip = self.duplicate_obj(old_clip)
-                new_track[new_clip_i] = new_clip
-                return Result(True, new_clip)
+        elif cmd == "remove_automation_point":
+            src = toks[1]
+            point_index = toks[2]
+            input_channel = self.get_obj(src)
+            automation = input_channel.active_automation
+            return Result(automation.remove_point(int(point_index)))
 
-            elif cmd == "duplicate_node":
-                clip_id = toks[1]
-                obj_id = toks[2]
-                clip = self.get_obj(clip_id)
-                obj = self.get_obj(obj_id)
-                new_obj = self.duplicate_obj(obj)
-                collection = clip.node_collection.nodes if isinstance(new_obj, FunctionNode) else clip.inputs
-                collection.append(new_obj)
-                new_obj.name = update_name(new_obj.name, [obj.name for obj in collection])
-                return Result(True, new_obj)
+        elif cmd == "create_io":
+            index = int(toks[1])
+            input_output = toks[2]
+            io_type = toks[3]
+            args = toks[4::]
+            args = " ".join(args)
+            IO_LIST = self.io_outputs if input_output == "outputs" else self.io_inputs
+            MIDI_LIST = MIDI_OUTPUT_DEVICES if input_output == "outputs" else MIDI_INPUT_DEVICES
+            try:
+                if io_type == "ethernet_dmx":
+                    IO_LIST[index] = EthernetDmxOutput(args)
+                    return Result(True, IO_LIST[index])
+                elif io_type == "node_dmx_client":
+                    IO_LIST[index] = NodeDmxClientOutput(args)
+                    return Result(True, IO_LIST[index])
+                elif io_type == "osc_server":
+                    # TODO: Only allow one
+                    IO_LIST[index] = OscServerInput(args)
+                    return Result(True, IO_LIST[index])
+                elif io_type == "midi_input":
+                    IO_LIST[index] = MidiInputDevice(args)
+                    MIDI_LIST[args] = IO_LIST[index]
+                    return Result(True, IO_LIST[index])
+                elif io_type == "midi_output":
+                    IO_LIST[index] = MidiOutputDevice(args)
+                    MIDI_LIST[args] = IO_LIST[index]
+                    return Result(True, IO_LIST[index])
+            except Exception as e:
+                print(e)
+                return Result(False, None)
 
-            elif cmd == "double_automation":
-                automation_id = toks[1]
-                automation = self.get_obj(automation_id)
-                old_length = automation.length
-                automation.set_length(old_length * 2)
-                for i in range(automation.n_points()):
-                    x = automation.values_x[i]
-                    y = automation.values_y[i]
-                    if x is not None:
-                        automation.add_point((x+old_length, y))
-                return Result(True)
+        elif cmd == "duplicate_clip":
+            new_track_i = int(toks[1])
+            new_clip_i = int(toks[2])
+            clip_id = toks[3]
 
-            elif cmd == "midi_map":
-                obj_id = toks[1]
-                obj = self.get_obj(obj_id)
-                dp = obj.get_parameter("device")
-                device_name = obj.get_parameter("device").value
-                id_ = obj.get_parameter("id").value
-                midi_channel, note_control = id_.split("/")
-                global_midi_control(device_name, "in").map_channel(int(midi_channel), int(note_control), obj)
-                return Result(True)
-            elif cmd == "unmap_midi":
-                obj_id = toks[1]
-                obj = self.get_obj(obj_id)
-                global_unmap_midi(obj)
-                return Result(True)
+            new_track = self.tracks[int(new_track_i)]
+            new_track_ptr = f"*track[{new_track_i}]"
+            old_clip = self.get_obj(clip_id)
+            new_clip = self.duplicate_obj(old_clip)
+            new_track[new_clip_i] = new_clip
+            return Result(True, new_clip)
+
+        elif cmd == "duplicate_node":
+            clip_id = toks[1]
+            obj_id = toks[2]
+            clip = self.get_obj(clip_id)
+            obj = self.get_obj(obj_id)
+            new_obj = self.duplicate_obj(obj)
+            collection = clip.node_collection.nodes if isinstance(new_obj, FunctionNode) else clip.inputs
+            collection.append(new_obj)
+            new_obj.name = update_name(new_obj.name, [obj.name for obj in collection])
+            return Result(True, new_obj)
+
+        elif cmd == "double_automation":
+            automation_id = toks[1]
+            automation = self.get_obj(automation_id)
+            old_length = automation.length
+            automation.set_length(old_length * 2)
+            for i in range(automation.n_points()):
+                x = automation.values_x[i]
+                y = automation.values_y[i]
+                if x is not None:
+                    automation.add_point((x+old_length, y))
+            return Result(True)
+
+        elif cmd == "midi_map":
+            obj_id = toks[1]
+            obj = self.get_obj(obj_id)
+            dp = obj.get_parameter("device")
+            device_name = obj.get_parameter("device").value
+            id_ = obj.get_parameter("id").value
+            midi_channel, note_control = id_.split("/")
+            global_midi_control(device_name, "in").map_channel(int(midi_channel), int(note_control), obj)
+            return Result(True)
+        elif cmd == "unmap_midi":
+            obj_id = toks[1]
+            obj = self.get_obj(obj_id)
+            global_unmap_midi(obj)
+            return Result(True)
 
     def _map_all_midi_inputs(self):
         for track in self.tracks:
@@ -2233,6 +2479,7 @@ class Result:
 
 IO_TYPES = {
     "ethernet_dmx": EthernetDmxOutput,
+    "node_dmx_client": NodeDmxClientOutput,
     "osc_server": OscServerInput,
     "midi_input": MidiInputDevice,
     "midi_output": MidiOutputDevice,
@@ -2244,6 +2491,7 @@ ALL_INPUT_TYPES = [
 ]
 ALL_OUTPUT_TYPES = [
     EthernetDmxOutput,
+    NodeDmxClientOutput,
     MidiOutputDevice,
 ]
 
