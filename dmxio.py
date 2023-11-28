@@ -29,6 +29,7 @@ class DmxConnection(object):
         self._dmx_frame = [0] * DMX_SIZE
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._address = address
+        self._connected = True
 
     def set_channel(self, channel, value, autorender = False):
         """Sets the desired DMX channel givan a value.
@@ -65,7 +66,9 @@ class DmxConnection(object):
         """Sends the DMX message over the network to update the DMX output."""
         try:
             self._socket.sendto(self.HEADER_BYTES + bytes(self._dmx_frame), self._address)
+            self._connected = True
         except ValueError as e:
+            self._connected = False
             print(self._dmx_frame)
             # TODO: Remove this one all bugs have been fixed
             raise e
@@ -73,6 +76,9 @@ class DmxConnection(object):
     def get_dmx_frame(self):
         """Return the DMX frame."""
         return tuple(self._dmx_frame)
+
+    def connected(self):
+        return self._connected
 
 
 class NodeDmxServer:
@@ -161,6 +167,7 @@ class NodeDmxClient:
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._dmx_address = dmx_address
         self._dmx_sub_frame = [0] * n_channels
+        self._connected = True
 
     def set_channel(self, channel, value):
         self._dmx_sub_frame[channel-1] = value
@@ -172,7 +179,14 @@ class NodeDmxClient:
     def send_frame(self):
         packet = struct.pack("B", self._dmx_address)
         packet += bytes(self._dmx_sub_frame)
-        self._socket.sendto(packet, self._server_addr)
+        try:
+            self._socket.sendto(packet, self._server_addr)
+            self._connected = True
+        except:
+            self._connected = False
 
     def clear(self):
         self._dmx_sub_frame = [0] * len(self._dmx_sub_frame)
+
+    def connected(self):
+        return self._connected

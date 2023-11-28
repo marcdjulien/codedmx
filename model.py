@@ -344,9 +344,9 @@ class AutomatableSourceNode(SourceNode):
         self.active_automation = automation
         return True
 
-    def add_automation(self):
+    def add_automation(self, automation=None):
         n = len(self.automations)
-        new_automation = ChannelAutomation(
+        new_automation = automation or ChannelAutomation(
             self.channel.dtype, 
             f"Preset #{n}", 
             min_value=self.get_parameter("min").value, 
@@ -941,8 +941,8 @@ class FunctionTimeSeconds(FunctionNode):
         self.type = "time_s"
 
     def transform(self):
-        global _STATE
-        self.outputs[0].set(_STATE.time_since_start_s)
+        global __STATE
+        self.outputs[0].set(__STATE.time_since_start_s)
 
 
 class FunctionTimeBeats(FunctionNode):
@@ -954,10 +954,8 @@ class FunctionTimeBeats(FunctionNode):
         self.type = "time_beat"
 
     def transform(self):
-        global _STATE
-        self.outputs[0].set(_STATE.time_since_start_beat + 1)
-
-
+        global __STATE
+        self.outputs[0].set(__STATE.time_since_start_beat + 1)
 
 
 class FunctionChanging(FunctionNode):
@@ -1704,7 +1702,7 @@ class Track(Identifier):
         return new_output_group
 
     def __delitem__(self, key):
-        clips[key] = None
+        self.clips[key] = None
 
     def __getitem__(self, key):
         return self.clips[key]
@@ -1768,6 +1766,12 @@ class IO:
     def deserialize(self, data):
         pass
 
+    def connect(self):
+        pass
+
+    def connected(self):
+        raise NotImplemented
+
 
 class EthernetDmxOutput(IO):
     nice_title = "Ethernet DMX"
@@ -1778,8 +1782,9 @@ class EthernetDmxOutput(IO):
         super().__init__(args)
         self.host, self.port = args.split(":")
         self.port = int(self.port)
-        self.dmx_connection = dmxio.DmxConnection((self.host, self.port))
+        self.dmx_connection = None
         self.dmx_frame = [0] * 512
+        self.connect()
 
     def update(self, outputs):
         for output_channel in outputs:
@@ -1801,6 +1806,15 @@ class EthernetDmxOutput(IO):
         except Exception as e:
             raise e
 
+    def connect(self):
+        try:
+            self.dmx_connection = dmxio.DmxConnection((self.host, self.port))
+        except Exception as e:
+            logger.warning(e)
+
+    def connected(self):
+        return self.dmx_connection is not None and self.dmx_connection.connected()
+
 
 class NodeDmxClientOutput(IO):
     nice_title = "Node DMX Client"
@@ -1811,8 +1825,9 @@ class NodeDmxClientOutput(IO):
         super().__init__(args)
         self.host, self.port = args.split(":")
         self.port = int(self.port)
-        self.dmx_client = dmxio.NodeDmxClient((self.host, self.port), 1, 512)
+        self.dmx_client = None
         self.dmx_frame = [0] * 512
+        self.connect()
 
     def update(self, outputs):
         for output_channel in outputs:
@@ -1834,6 +1849,15 @@ class NodeDmxClientOutput(IO):
         except Exception as e:
             raise e
 
+    def connect(self):
+        try:
+            self.dmx_client = dmxio.DmxConnection((self.host, self.port))
+        except Exception as e:
+            logger.warning(e)
+
+    def connected(self):
+        return self.dmx_client is not None and self.dmx_client.connected()
+
 
 class OscServerInput(IO):
     nice_title = "OSC Server"
@@ -1844,18 +1868,10 @@ class OscServerInput(IO):
         super().__init__(args)
         self.port = int(args)
         self.host = "127.0.0.1"
-        self.dispatcher = Dispatcher()
-
-        self.server = osc_server.ThreadingOSCUDPServer((self.host, self.port), self.dispatcher)
-
-        def start_osc_listening_server():
-            print("OSCServer started on {}".format(self.server.server_address))
-            self.server.serve_forever()
-            print("OSC Server Stopped")
-
-        self.thread = threading.Thread(target=start_osc_listening_server)
-        self.thread.daemon = True
-        self.thread.start()
+        self.dispatcher = None
+        self.server = None
+        self.thread = None
+        self.connect()
 
     def map_channel(self, endpoint, input_channel):
         def func(endpoint, value):
@@ -1871,6 +1887,25 @@ class OscServerInput(IO):
     def __str__(self):
         return f"OscServer"
 
+    def connect(self):
+        try:
+            self.dispatcher = Dispatcher()
+            self.server = osc_server.ThreadingOSCUDPServer((self.host, self.port), self.dispatcher)
+
+            def start_osc_listening_server():
+                print("OSCServer started on {}".format(self.server.server_address))
+                self.server.serve_forever()
+                print("OSC Server Stopped")
+
+            self.thread = threading.Thread(target=start_osc_listening_server)
+            self.thread.daemon = True
+            self.thread.start()
+        except Exception as e:
+            logger.warning(e)
+
+    def connected(self):
+        return self.thread is not None and self.thread.is_alive()
+
 
 class MidiInputDevice(IO):
     nice_title = "MIDI (Input)"
@@ -1880,9 +1915,9 @@ class MidiInputDevice(IO):
     def __init__(self, args):
         super().__init__(args)
         self.device_name = args
-        assert self.device_name in mido.get_input_names()
-        self.port = mido.open_input(self.device_name, callback=self.callback)
+        self.port = None
         self.channel_map = defaultdict(lambda: defaultdict(list))
+        self.connect()
 
     def map_channel(self, midi_channel, note_control, channel):
         global_unmap_midi(channel)
@@ -1926,6 +1961,15 @@ class MidiInputDevice(IO):
                 for channel_id in channels:
                     self.map_channel(int(midi_channel), int(note_control), UUID_DATABASE[channel_id])
 
+    def connect(self):
+        try:
+            self.port = mido.open_input(self.device_name, callback=self.callback)
+        except Exception as e:
+            logger.warning(e)
+
+    def connected(self):
+        return self.port is not None and not self.port.closed
+
 
 class MidiOutputDevice(IO):
     nice_title = "MIDI (Output)"
@@ -1935,12 +1979,14 @@ class MidiOutputDevice(IO):
     def __init__(self, args):
         super().__init__(args)
         self.device_name = args
-        assert self.device_name in mido.get_output_names()
-        self.port = mido.open_output(self.device_name)
+        self.port = None
         self.channel_map = {}
-        self.port.reset()
+        self.connect()
 
     def update(self, _):
+        if self.port is None:
+            return
+
         for (midi_channel, note_control), channel in self.channel_map.items():
             value = channel.get()
             value = clamp(int(value), 0, 127)
@@ -1970,12 +2016,21 @@ class MidiOutputDevice(IO):
             midi_channel, note_control = key.split(":")
             self.map_channel(int(midi_channel), int(note_control), UUID_DATABASE[channel_id])
 
+    def connect(self):
+        try:
+            self.port = mido.open_output(self.device_name)
+            self.port.reset()
+        except Exception as e:
+            logger.warning(e)
+
+    def connected(self):
+        return self.port is not None and not self.port.closed
 
 N_TRACKS = 6
 
 OSC_SERVER_INDEX = 0
 def global_osc_server():
-    return _STATE.io_inputs[OSC_SERVER_INDEX]
+    return __STATE.io_inputs[OSC_SERVER_INDEX]
 
 LAST_MIDI_MESSAGE = None
 MIDI_INPUT_DEVICES = {}
@@ -2001,8 +2056,8 @@ class ProgramState(Identifier):
     ]
     
     def __init__(self):
-        global _STATE
-        _STATE = self
+        global __STATE
+        __STATE = self
         super().__init__()
         self.mode = "edit"
         self.project_name = "Untitled"
@@ -2068,21 +2123,21 @@ class ProgramState(Identifier):
             new_track.deserialize(track_data)
             self.tracks[i] = new_track
 
-        for device_data in data["io_inputs"]:
+        for i, device_data in enumerate(data["io_inputs"]):
             if device_data is None:
                 continue
             device = IO_TYPES[device_data["type"]](device_data["args"])
             device.deserialize(device_data)
-            self.io_inputs.append(device)
+            self.io_inputs[i] = device
             if isinstance(device, MidiInputDevice):
                 MIDI_INPUT_DEVICES[device.device_name] = device
 
-        for device_data in data["io_outputs"]:
+        for i, device_data in enumerate(data["io_outputs"]):
             if device_data is None:
                 continue
             device = IO_TYPES[device_data["type"]](device_data["args"])
             device.deserialize(device_data)
-            self.io_outputs.append(device)
+            self.io_outputs[i] = device
             if isinstance(device, MidiOutputDevice):
                 MIDI_OUTPUT_DEVICES[device.device_name] = device
 
@@ -2181,6 +2236,16 @@ class ProgramState(Identifier):
             src_channel = self.get_obj(src_id)
             dst_channel = self.get_obj(dst_id)
             return Result(clip.node_collection.del_link(src_channel, dst_channel))
+
+        elif cmd == "delete_clip":
+            track_id, clip_i = toks[1].split(",")
+            clip_i = int(clip_i)
+            track = self.get_obj(track_id)
+            assert clip_i < len(track.clips)
+            clip = track[clip_i]
+            clip.deleted = True
+            del track[clip_i]
+            return Result(True)
 
         elif cmd == "create_node":
             # resplit
@@ -2314,6 +2379,14 @@ class ProgramState(Identifier):
                 print(e)
                 return Result(False, None)
 
+        elif cmd == "connect_io":
+            index = int(toks[1])
+            input_output = toks[2]
+            IO_LIST = self.io_outputs if input_output == "outputs" else self.io_inputs
+            io = IO_LIST[index]
+            io.connect()
+            return Result(True, io)
+
         elif cmd == "duplicate_clip":
             new_track_i = int(toks[1])
             new_clip_i = int(toks[2])
@@ -2348,6 +2421,15 @@ class ProgramState(Identifier):
                 if x is not None:
                     automation.add_point((x+old_length, y))
             return Result(True)
+
+        elif cmd == "duplicate_preset":
+            input_id = toks[1]
+            automation_id = toks[2]
+            input_channel = self.get_obj(input_id)
+            automation = self.get_obj(automation_id)
+            new_automation = self.duplicate_obj(automation)
+            input_channel.add_automation(new_automation)
+            return Result(True, new_automation)
 
         elif cmd == "midi_map":
             obj_id = toks[1]
@@ -2495,4 +2577,4 @@ ALL_OUTPUT_TYPES = [
     MidiOutputDevice,
 ]
 
-_STATE = None
+__STATE = None
