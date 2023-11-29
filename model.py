@@ -26,7 +26,7 @@ def clamp(x, min_value, max_value):
 MAX_VALUES = {
     "bool": 1,
     "int": 255,
-    "float": 255.0,
+    "float": 100.,
 }
 
 NEAR_THRESHOLD = 0.01
@@ -872,7 +872,6 @@ class FunctionDemux(FunctionNode):
     def __init__(self, args="0", name="Demux"):
         super().__init__(args, name)
         self.n = int(args)
-        self.parameters = []
         self.inputs = [
             Channel(direction="in", value=0, dtype="int", name=f"sel"),
             Channel(direction="in", dtype="any", name=f"val")
@@ -932,6 +931,48 @@ class FunctionPassthrough(FunctionNode):
         self.outputs[0].set(self.inputs[0].get())
 
 
+class FunctionGlobalReceiver(FunctionNode):
+    nice_title = "Global Receiver"
+
+    def __init__(self, args="", name="Global Receiver"):
+        super().__init__(args, name)
+        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
+        self.var_parameter = Parameter("var", "name")
+        self.add_parameter(self.var_parameter)
+        self.type = "global_receiver"
+
+    def transform(self):
+        _STATE.global_vars[self.var_parameter.value] = self.inputs[0].get()
+
+    def update_parameter(self, index, value):
+        if self.parameters[index] == self.var_parameter:
+            self.parameters[index].value = value
+            return True
+        else:
+            return super().update_parameter(index, value)
+
+
+class FunctionGlobalSender(FunctionNode):
+    nice_title = "Global Sender"
+
+    def __init__(self, args="", name="Global Sender"):
+        super().__init__(args, name)
+        self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
+        self.var_parameter = Parameter("var", "name")
+        self.add_parameter(self.var_parameter)
+        self.type = "global_sender"
+
+    def transform(self):
+        self.outputs[0].set(_STATE.global_vars.get(self.var_parameter.value))
+
+    def update_parameter(self, index, value):
+        if self.parameters[index] == self.var_parameter:
+            self.parameters[index].value = value
+            return True
+        else:
+            return super().update_parameter(index, value)
+
+
 class FunctionTimeSeconds(FunctionNode):
     nice_title = "Seconds"
 
@@ -941,8 +982,8 @@ class FunctionTimeSeconds(FunctionNode):
         self.type = "time_s"
 
     def transform(self):
-        global __STATE
-        self.outputs[0].set(__STATE.time_since_start_s)
+        global _STATE
+        self.outputs[0].set(_STATE.time_since_start_s)
 
 
 class FunctionTimeBeats(FunctionNode):
@@ -954,8 +995,8 @@ class FunctionTimeBeats(FunctionNode):
         self.type = "time_beat"
 
     def transform(self):
-        global __STATE
-        self.outputs[0].set(__STATE.time_since_start_beat + 1)
+        global _STATE
+        self.outputs[0].set(_STATE.time_since_start_beat + 1)
 
 
 class FunctionChanging(FunctionNode):
@@ -1295,6 +1336,8 @@ FUNCTION_TYPES = {
     "demux": FunctionDemux,
     "multiplexer": FunctionMultiplexer,
     "passthrough": FunctionPassthrough,
+    "global_receiver": FunctionGlobalReceiver,
+    "global_sender": FunctionGlobalSender,
     "time_s": FunctionTimeSeconds,
     "time_beat": FunctionTimeBeats,
     "changing": FunctionChanging,
@@ -1755,7 +1798,9 @@ class IO:
     type = None
     def __init__(self, args):
         self.args = args
+        self.last_io_time = 0
         logger.debug("Created %s(%s)", self.type, self.args)
+
 
     def update(self, outputs):
         raise NotImplemented
@@ -1771,6 +1816,9 @@ class IO:
 
     def connected(self):
         raise NotImplemented
+
+    def update_io_time(self):
+        self.last_io_time = time.time()
 
 
 class EthernetDmxOutput(IO):
@@ -1803,6 +1851,7 @@ class EthernetDmxOutput(IO):
         try:
             self.dmx_connection.set_channels(1, self.dmx_frame)
             self.dmx_connection.render()
+            self.update_io_time()
         except Exception as e:
             raise e
 
@@ -1846,6 +1895,7 @@ class NodeDmxClientOutput(IO):
         try:
             self.dmx_client.set_channels(1, self.dmx_frame)
             self.dmx_client.send_frame()
+            self.update_io_time()
         except Exception as e:
             raise e
 
@@ -1876,6 +1926,8 @@ class OscServerInput(IO):
     def map_channel(self, endpoint, input_channel):
         def func(endpoint, value):
             input_channel.ext_set(value)
+            self.update_io_time()
+
         self.dispatcher.map(endpoint, func)
 
     def umap(self, endpoint):
@@ -1907,6 +1959,21 @@ class OscServerInput(IO):
         return self.thread is not None and self.thread.is_alive()
 
 
+PITCH_FAKE_CONTROL = -1
+
+def midi_value(msg):
+    if msg.type == "control_change":
+        value = msg.value
+        note_control = msg.control
+    elif msg.type in ["note_on", "note_off"]:
+        value =  msg.velocity
+        note_control = msg.note
+    elif msg.type == "pitchwheel":
+        value =  msg.pitch
+        note_control = PITCH_FAKE_CONTROL
+
+    return note_control, value
+
 class MidiInputDevice(IO):
     nice_title = "MIDI (Input)"
     arg_template = "name"
@@ -1935,15 +2002,11 @@ class MidiInputDevice(IO):
         global LAST_MIDI_MESSAGE
         LAST_MIDI_MESSAGE = (self.device_name, message)
         midi_channel = message.channel
-        if message.is_cc():
-            note_control = message.control
-            value = message.value
-        else:
-            note_control = message.note
-            value = 255 if message.velocity > 1 else 0
+        note_control, value = midi_value(message)
         if midi_channel in self.channel_map and note_control in self.channel_map[midi_channel]:
             for channel in self.channel_map[midi_channel][note_control]:
                 channel.ext_set(value)
+        self.update_io_time()
 
     def serialize(self):
         data = super().serialize()
@@ -1992,6 +2055,8 @@ class MidiOutputDevice(IO):
             value = clamp(int(value), 0, 127)
             self.port.send(mido.Message("note_on", channel=midi_channel, note=note_control, velocity=value))
 
+        self.update_io_time()
+
     def map_channel(self, midi_channel, note_control, channel):
         self.channel_map[(midi_channel, note_control)] = channel
 
@@ -2030,7 +2095,7 @@ N_TRACKS = 6
 
 OSC_SERVER_INDEX = 0
 def global_osc_server():
-    return __STATE.io_inputs[OSC_SERVER_INDEX]
+    return _STATE.io_inputs[OSC_SERVER_INDEX]
 
 LAST_MIDI_MESSAGE = None
 MIDI_INPUT_DEVICES = {}
@@ -2056,8 +2121,8 @@ class ProgramState(Identifier):
     ]
     
     def __init__(self):
-        global __STATE
-        __STATE = self
+        global _STATE
+        _STATE = self
         super().__init__()
         self.mode = "edit"
         self.project_name = "Untitled"
@@ -2069,6 +2134,8 @@ class ProgramState(Identifier):
 
         self.io_outputs = [None] * 5
         self.io_inputs = [None] * 5 
+
+        self.global_vars = {}
 
         self.playing = False
         self.tempo = 120.0
@@ -2577,4 +2644,4 @@ ALL_OUTPUT_TYPES = [
     MidiOutputDevice,
 ]
 
-__STATE = None
+_STATE = None

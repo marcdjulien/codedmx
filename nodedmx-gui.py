@@ -232,8 +232,56 @@ class NewClip(GuiAction):
         self.gui._active_track = track
         self.gui._active_clip = clip
 
-        # Add the associated Node Editor for this Clip.
+        # Create the properties window 
+        self.create_clip_properties_window(clip)
+
+        # Add the associated node editor 
         self.create_node_editor_window(clip)
+
+    def create_clip_properties_window(self, clip):
+        window_tag = get_properties_window_tag(clip)
+
+        with dpg.window(
+            tag=window_tag,
+            label=f"Properties",
+            width=500,
+            height=700,
+            pos=(SCREEN_WIDTH/3,SCREEN_HEIGHT/3),
+            no_move=True,
+            show=False,
+            modal=True,
+            popup=True,
+            no_title_bar=True,
+        ) as window:
+            properties_table_tag = f"{window_tag}.properties_table"
+            with dpg.table(header_row=True, tag=properties_table_tag, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column(label="Property")
+                dpg.add_table_column(label="Value")
+
+                def update_clip_buffer_callback(sender, app_data, user_data):
+                    property_name = user_data
+                    self.gui._properties_buffer["clip"][property_name] = app_data
+
+                def save_clip_properties_callback(sender, app_data, user_data):
+                    clip = user_data
+                    for property_name, value in self.gui._properties_buffer["clip"].items():
+                        setattr(clip, property_name, value)
+                    dpg.configure_item(window_tag, show=False)
+
+                def cancel_properties_callback(sender, app_data, user_data):
+                    clip = user_data
+                    dpg.set_value(f"{clip.id}.name", clip.name)
+                    dpg.configure_item(window_tag, show=False)
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Name")
+                    dpg.add_input_text(source=f"{clip.id}.name", callback=update_clip_buffer_callback, user_data=("name"))
+
+                with dpg.table_row():
+                    dpg.add_table_cell()
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Save", callback=save_clip_properties_callback, user_data=clip)
+                        dpg.add_button(label="Cancel", callback=cancel_properties_callback, user_data=clip)
 
     def create_node_editor_window(self, clip):
         logging.debug("Creating Node Editor Window (%s)", clip.id)
@@ -265,14 +313,10 @@ class NewClip(GuiAction):
             with dpg.menu_bar(tag=menu_tag):
                 self.gui.add_node_menu(menu_tag, clip)
 
-                dpg.add_menu_item(label="[Ctrl+Del]", callback=self.gui.delete_selected_nodes, user_data=clip)
-
-                dpg.add_text(default_value="Clip Name:")
-
-                def set_clip_text(sender, app_data, user_data):
-                    if self.state.mode == "edit":
-                        clip.name = app_data
-                dpg.add_input_text(source=f"{clip.id}.name", width=75, callback=set_clip_text)
+                def show_properties_window(sender, app_data, user_data):
+                    self.gui._properties_buffer.clear()
+                    dpg.configure_item(get_properties_window_tag(clip), show=True)
+                dpg.add_menu_item(label="Properties", callback=show_properties_window)
 
                 dpg.add_menu_item(label="Save Preset", callback=self.gui.show_presets_window, user_data=clip)
 
@@ -372,6 +416,12 @@ class Gui:
 
         self.lock = RLock()
         self.past_actions = []
+
+    def gui_lock_callback(func):
+        def wrapper(self, sender, app_data, user_data):
+            with self.lock:
+                return func(self, sender, app_data, user_data)
+        return wrapper
 
     def execute_wrapper(self, command):
         dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}] *")
@@ -732,6 +782,7 @@ class Gui:
         if double_click_callback is not None:
             self.register_handler(dpg.add_item_double_clicked_handler, group_tag, self.action_callback, double_click_callback)
 
+    @gui_lock_callback
     def paste_clip_callback(self, sender, app_data, user_data):
         self.paste_clip(*user_data)
         self.update_clip_window()
@@ -953,6 +1004,13 @@ class Gui:
                     dpg.add_menu_item(  
                         label=i, user_data=("create", ("demux", i, clip), right_click_menu), callback=self.add_function_node
                     )
+            with dpg.menu(label="Global"):
+                    dpg.add_menu_item(
+                        label="Receiver", user_data=("create", ("global_receiver", None, clip), right_click_menu), callback=self.add_function_node
+                    )
+                    dpg.add_menu_item(
+                        label="Sender", user_data=("create", ("global_sender", None, clip), right_click_menu), callback=self.add_function_node
+                    )  
             with dpg.menu(label="Last Changed"):
                 for i in range(2, 33):
                     dpg.add_menu_item(  
@@ -1015,12 +1073,6 @@ class Gui:
     def update_channel_attr(self, sender, app_data, user_data):
         channel, attr = user_data
         setattr(channel, attr, app_data)
-
-    def gui_lock_callback(func):
-        def wrapper(self, sender, app_data, user_data):
-            with self.lock:
-                return func(self, sender, app_data, user_data)
-        return wrapper
 
     @gui_lock_callback
     def add_source_node(self, sender, app_data, user_data):
@@ -1545,7 +1597,7 @@ class Gui:
         if app_data:
             self._properties_buffer["attrs"][attr_name] = (app_data, tag)
 
-    def save_propperties_callback(self, sender, app_data, user_data):
+    def save_properties_callback(self, sender, app_data, user_data):
         obj = user_data[0]
         # Parameters
         for parameter, (parameter_index, value) in self._properties_buffer.get("parameters", {}).items():
@@ -1612,14 +1664,15 @@ class Gui:
                 with dpg.table_row():
                     dpg.add_table_cell()
                     with dpg.group(horizontal=True):
-                        dpg.add_button(label="Save", callback=self.save_propperties_callback, user_data=(obj,))
+                        dpg.add_button(label="Save", callback=self.save_properties_callback, user_data=(obj,))
                         
-                        def cancel_properties():
+                        def cancel_properties_callback(sender, app_data, user_data):
+                            obj = user_data
                             for parameter in obj.parameters:
                                 dpg.set_value(f"{parameter.id}.value", parameter.value)
                             dpg.configure_item(window_tag, show=False)
                             dpg.set_value(f"{obj.id}.name", obj.name)
-                        dpg.add_button(label="Cancel", callback=cancel_properties, user_data=obj)
+                        dpg.add_button(label="Cancel", callback=cancel_properties_callback, user_data=obj)
 
     def create_custom_node_properties_window(self, clip, node):
         window_tag = get_properties_window_tag(node)
@@ -1686,9 +1739,9 @@ class Gui:
                 with dpg.table_row():
                     dpg.add_table_cell()
                     with dpg.group(horizontal=True):
-                        dpg.add_button(label="Save", callback=self.save_propperties_callback, user_data=(node, clip))
+                        dpg.add_button(label="Save", callback=self.save_properties_callback, user_data=(node, clip))
                         
-                        def cancel_properties(sender, app_data, user_data):
+                        def cancel_properties_callback(sender, app_data, user_data):
                             node = user_data
                             for parameter in node.parameters:
                                 if parameter.name == "code":
@@ -1697,7 +1750,7 @@ class Gui:
                                     dpg.set_value(f"{parameter.id}.value", parameter.value)
                             dpg.configure_item(window_tag, show=False)
                             dpg.set_value(f"{node.id}.name", node.name)
-                        dpg.add_button(label="Cancel", callback=cancel_properties, user_data=node)
+                        dpg.add_button(label="Cancel", callback=cancel_properties_callback, user_data=node)
 
     def add_node_popup_menu(self, node_tag, clip, obj):
         def show_properties_window(sender, app_data, user_data):
@@ -1847,7 +1900,7 @@ class Gui:
             obj = user_data
             if model.LAST_MIDI_MESSAGE is not None:
                 device_name, message = model.LAST_MIDI_MESSAGE
-                note_control = message.control if message.is_cc() else message.note
+                note_control, value = model.midi_value(message)
                 if inout == "input":
                     self.update_parameter_by_name(obj, "device", device_name)
                     self.update_parameter_by_name(obj, "id", f"{message.channel}/{note_control}")
@@ -2761,7 +2814,7 @@ class Gui:
         result = self.execute_wrapper(f"duplicate_clip {track_i} {clip_i} {clip_id} ")
         if result.success:
             new_clip = result.payload
-            self.populate_clip_slot(track_i, clip_i)
+            self.action(NewClip({"track_i":track_i, "clip_i":clip_i}))
         else:
             raise RuntimeError(f"Failed to duplicate clip {clip_id}")
 
@@ -2912,17 +2965,20 @@ class Gui:
         if model.LAST_MIDI_MESSAGE is not None:
             device_name, message = model.LAST_MIDI_MESSAGE
             channel = message.channel
-            note_control = message.control if message.is_cc() else message.note
+            note_control, _ = model.midi_value(message)
             dpg.set_value("last_midi_message", f"{device_name}: {channel}/{note_control}")
 
         # Update IO Window
         red = (255, 0, 0, 100)
-        green = (0, 255, 0, 100)
+        green = [0, 255, 0, 255]
         for inout in ["inputs", "outputs"]:
             for i in range(5):
                 table_tag = f"io.{inout}.table"
                 io = self.state.io_inputs[i] if inout == "inputs" else self.state.io_outputs[i]
                 color = red if io is None or not io.connected() else green
+                if color == green:
+                    alpha = 255 - int(clamp((time.time() - io.last_io_time)/0.25, 0, 0.5)*255)
+                    color[3] = alpha
                 dpg.highlight_table_cell(table_tag, i, 3, color=color)                    
 
 
