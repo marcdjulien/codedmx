@@ -388,6 +388,10 @@ class Gui:
             "clip_preset_themes": {}
         }
 
+        self.cache = {
+            "recent": []
+        }
+
         self.mouse_x, self.mouse_y = 0, 0
         self.mouse_drag_x, self.mouse_drag_y = 0, 0
         self.mouse_click_x, self.mouse_click_y = 0, 0
@@ -574,6 +578,9 @@ class Gui:
         def restore_callback(sender, app_data):
             self.open_project(app_data["file_path_name"])
 
+        def restore_callback2(sender, app_data, user_data):
+            self.open_project(user_data)
+
         def save_custom_node(sender, app_data):
             if self._custom_node_to_save is None:
                 return
@@ -696,6 +703,13 @@ class Gui:
 
             with dpg.menu(label="File"):
                 dpg.add_menu_item(label="Open", callback=self.open_menu_callback)
+                
+                with dpg.menu(label="Open Recent"):
+                    for filepath in self.cache["recent"]:
+                        logger.info(filepath)
+                        print(filepath)
+                        dpg.add_menu_item(label=os.path.basename(filepath), callback=restore_callback2, user_data=filepath)
+
                 dpg.add_menu_item(label="Save", callback=self.save_menu_callback)
                 dpg.add_menu_item(label="Save As", callback=self.save_as_menu_callback)
 
@@ -3281,8 +3295,15 @@ class Gui:
         self.gui_state = data["gui"]
 
     def open_project(self, filepath):
+        if filepath in self.cache["recent"]:
+            self.cache["recent"].remove(filepath)
+        self.cache["recent"].insert(0, filepath)
+        with open(self.cache["path"], "w") as f:
+            json.dump(self.cache, f)
+
         new_cmd = ["python"] + sys.argv + ["--project", filepath]
         subprocess.Popen(new_cmd)
+
         dpg.stop_dearpygui()
 
 
@@ -3293,9 +3314,26 @@ if __name__ == "__main__":
                         dest="project_filepath",
                         help="Project file path.")
 
+    parser.add_argument("--cache", 
+                        default=".cache",
+                        dest="cache_filepath",
+                        help="Cached data.")
+
     args = parser.parse_args()
 
     gui = Gui()
+
+    cache = {"recent": []}
+    try:
+        if args.cache_filepath:
+            if os.path.exists(args.cache_filepath):
+                with open(args.cache_filepath, "r") as f:
+                    cache = json.load(f)
+    except Exception as e:
+        logger.warning(e)
+    finally:
+        cache["path"] = os.path.abspath(args.cache_filepath)
+        gui.cache = cache
 
     if args.project_filepath:
         logging.debug("Opening %s", args.project_filepath)
