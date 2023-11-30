@@ -1437,6 +1437,26 @@ class NodeCollection:
             self.links.append(link)
         
 
+class Point(Identifier):
+    def __init__(self, x=None, y=None):
+        super().__init__()
+        self.x = x
+        self.y = y
+
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "x": self.x,
+            "y": self.y,
+        })
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.x = data["x"]
+        self.y = data["y"]
+
+
 class ChannelAutomation(Identifier):
     default_interpolation_type = {
         "bool": "previous",
@@ -1450,10 +1470,17 @@ class ChannelAutomation(Identifier):
         self.dtype = dtype
         self.name = name
         self.length = 4 # beats
-        self.values_x = [0, self.length]
-        self.values_y = [min_value, max_value]
-        self.f = scipy.interpolate.interp1d(self.values_x, self.values_y)
+        self.points = [Point(0, min_value), Point(self.length, max_value)]
         self.interpolation = self.default_interpolation_type[self.dtype]
+        self.reinterpolate()
+
+    @property
+    def values_x(self):
+        return [p.x for p in self.points if not p.deleted]
+
+    @property
+    def values_y(self):
+        return [p.y for p in self.points if not p.deleted]
 
     def value(self, beat_time):
         if self.f is None:
@@ -1472,89 +1499,47 @@ class ChannelAutomation(Identifier):
             return float(v)
 
     def n_points(self):
-        return len(self.values_x)
+        return len(self.points)
 
-    def add_point(self, p1, replace_near=False):
-        if replace_near:
-            max_x_index = self.max_x_index()
-            for i, x in enumerate(self.values_x):
-                if x is None:
-                    continue
-                if abs(x - p1[0]) >= NEAR_THRESHOLD:
-                    continue
-
-                if i in [0, max_x_index]:
-                    self.values_y[i] = p1[1]
-                else:
-                    self.values_x[i] = None
-                    self.values_y[i] = None
-                    self.values_x.append(p1[0])
-                    self.values_y.append(p1[1])
-                break                       
-            else:
-                self.values_x.append(p1[0])
-                self.values_y.append(p1[1])
-        else:
-            self.values_x.append(p1[0])
-            self.values_y.append(p1[1])
-        
+    def add_point(self, point, replace_near=False):
+        self.points.append(point)
+        self.points.sort(key=lambda p: p.x)
         self.reinterpolate()
 
-    def remove_point(self, index, force=False):
-        if index in [0, self.max_x_index()] and not force:
-            return False
-        else:
-            self.values_x[index] = None
-            self.values_y[index] = None
-            self.reinterpolate()
-            return True
-
-    def max_x_index(self):
-        return self.values_x.index(max(self.values_x, key=lambda x: x or 0))
-
-    def update_point(self, index, p1):
-        self.values_x[index] = p1[0]
-        self.values_y[index] = p1[1]
-        self.reinterpolate()
+    def shift_points(self, beats):
+        pass
 
     def set_interpolation(self, kind):
         self.interpolation = kind
         self.reinterpolate()
 
     def reinterpolate(self):
-        values_x = []
-        values_y = []
-        for i, x in enumerate(self.values_x):
-            if x is not None and x not in values_x:
-                values_x.append(x)
-                values_y.append(self.values_y[i])
-
         self.f = scipy.interpolate.interp1d(
-            values_x, 
-            values_y, 
+            self.values_x, 
+            self.values_y, 
             kind=self.interpolation, 
-            assume_sorted=False
+            assume_sorted=False,
+            bounds_error=False,
         )
 
     def set_length(self, new_length):
-        new_length = float(new_length)
         self.length = new_length
         if new_length > self.length:
-            self.add_point((new_length, self.values_y[self.max_x_index()]))
+            self.add_point(Point(new_length, self.points[-1].y))
         else:
-            for i, x in enumerate(self.values_x):
-                if x is None:
+            for point in self.points:
+                if point.deleted:
                     continue
-                if x > new_length:
-                    self.remove_point(i, force=True)
-            self.add_point((new_length, self.values_y[self.max_x_index()]))
+                if point.x > new_length:
+                    point.deleted = True
+            self.add_point(Point(new_length, self.value(new_length)))
+        self.reinterpolate()
 
     def serialize(self):
         data = super().serialize()
         data.update({
             "length": self.length,
-            "values_x": self.values_x,
-            "values_y": self.values_y,
+            "points": [point.serialize() for point in self.points if not point.deleted],
             "dtype": self.dtype,
             "name": self.name,
             "interpolation": self.interpolation,
@@ -1566,11 +1551,12 @@ class ChannelAutomation(Identifier):
 
         self.name = data["name"]
         self.dtype = data["dtype"]
-        self.values_x = data["values_x"]
-        self.values_y = data["values_y"]
+        for point_data in data["points"]:
+            point = Point()
+            point.deserialize(point_data)
+            self.points.append(point)
         self.name = data["name"]
         self.set_interpolation(data["interpolation"])
-        # The will re-interpolate for us.
         self.set_length(data["length"])
 
 
@@ -2218,7 +2204,6 @@ class ProgramState(Identifier):
     def execute(self, full_command):
         global MIDI_INPUT_DEVICES
         global MIDI_OUTPUT_DEVICES
-        logger.info(full_command)
 
         allowed_performance_commands = [
             "set_active_automation",
@@ -2229,6 +2214,9 @@ class ProgramState(Identifier):
         toks = full_command.split()
         cmd = toks[0]
         
+        if cmd not in ["update_automation_point"]:
+            logger.info(full_command)
+
         if self.mode == "performance":
             if cmd not in allowed_performance_commands:
                 return Result(False)
@@ -2365,19 +2353,20 @@ class ProgramState(Identifier):
 
         elif cmd == "add_automation_point":
             automation_id = toks[1]
-            point = toks[2]
+            values = [float(x) for x in toks[2].split(",")]
             automation = self.get_obj(automation_id)
-            automation.add_point([float(x) for x in point.split(",")])
+            automation.add_point(Point(*values))
             return Result(True)
 
         elif cmd == "update_automation_point":
             automation_id = toks[1]
-            point_index = toks[2]
-            point = toks[3]
+            point_id = toks[2]
+            values = [float(x) for x in toks[3].split(",")]
             automation = self.get_obj(automation_id)
-            automation.update_point(
-                int(point_index), [float(x) for x in point.split(",")]
-            )
+            point = self.get_obj(point_id)
+            point.x = values[0]
+            point.y = values[1]
+            automation.reinterpolate()
             return Result(True)
 
         elif cmd == "update_parameter":
@@ -2408,12 +2397,14 @@ class ProgramState(Identifier):
             input_channel.set(value)
             return Result(True)
 
-        elif cmd == "remove_automation_point":
-            src = toks[1]
-            point_index = toks[2]
-            input_channel = self.get_obj(src)
-            automation = input_channel.active_automation
-            return Result(automation.remove_point(int(point_index)))
+        elif cmd == "delete_automation_point":
+            automation_id = toks[1]
+            point_id = toks[2]
+            automation = self.get_obj(automation_id)
+            point = self.get_obj(point_id)
+            point.deleted = True
+            automation.reinterpolate()
+            return Result(True)
 
         elif cmd == "create_io":
             index = int(toks[1])
@@ -2486,7 +2477,7 @@ class ProgramState(Identifier):
                 x = automation.values_x[i]
                 y = automation.values_y[i]
                 if x is not None:
-                    automation.add_point((x+old_length, y))
+                    automation.add_point((x+old_length+NEAR_THRESHOLD, y))
             return Result(True)
 
         elif cmd == "duplicate_preset":
@@ -2507,6 +2498,7 @@ class ProgramState(Identifier):
             midi_channel, note_control = id_.split("/")
             global_midi_control(device_name, "in").map_channel(int(midi_channel), int(note_control), obj)
             return Result(True)
+
         elif cmd == "unmap_midi":
             obj_id = toks[1]
             obj = self.get_obj(obj_id)
@@ -2527,97 +2519,11 @@ class ProgramState(Identifier):
                         self.execute(f"midi_map {input_channel.id}")
 
     def get_obj(self, id_):
-        if id_.startswith("*"):
-            return self.get_obj_ptr(id_[1::])
-        else:
-            try:
-                return UUID_DATABASE[id_]
-            except Exception as e:
-                print(UUID_DATABASE)
-                raise
-
-    def get_obj_ptr(self, item_key):
-        if item_key.startswith("state"):
-            return self
-
-        # Track
-        match = re.fullmatch(r"track\[(\d+)\]", item_key)
-        if match:
-            ti = match.groups()[0]
-            return self.tracks[int(ti)]
-
-        # Clip
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]", item_key)
-        if match:
-            ti, ci = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)]
-
-        # Output
-        match = re.fullmatch(r"track\[(\d+)\]\.out\[(\d+)\]", item_key)
-        if match:
-            ti, oi = match.groups()
-            return self.tracks[int(ti)].outputs[int(oi)]
-
-        # Clip Input
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.in\[(\d+)\]", item_key)
-        if match:
-            ti, ci, ii = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)].inputs[int(ii)]
-
-        # Clip Output
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.out\[(\d+)\]", item_key)
-        if match:
-            ti, ci, oi = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)].outputs[int(oi)]
-
-        # Node Input
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.node\[(\d+)\].in\[(\d+)\]", item_key)
-        if match:
-            ti, ci, ni, ii = match.groups()
-            print(self.tracks[int(ti)].clips[int(ci)].node_collection.nodes[int(ni)].__class__.__name__)
-            return self.tracks[int(ti)].clips[int(ci)].node_collection.nodes[int(ni)].inputs[int(ii)]
-
-        # Node Output
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.node\[(\d+)\].out\[(\d+)\]", item_key)
-        if match:
-            ti, ci, ni, oi = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)].node_collection.nodes[int(ni)].outputs[int(oi)]
-
-        # Automation
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.in\[(\d+)\]\.automation\[(\d+)\]", item_key)
-        if match:
-            ti, ci, ii, ai = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)].inputs[int(ii)].automations[int(ai)]
-
-        # Node
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.node\[(\d+)\]", item_key)
-        if match:
-            ti, ci, ni = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)].node_collection.nodes[int(ni)]
-
-        # Parameter
-        match = re.fullmatch(r"track\[(\d+)\]\.clip\[(\d+)\]\.node\[(\d+)\]\.parameter\[(\d+)\]", item_key)
-        if match:
-            ti, ci, ni, pi = match.groups()
-            return self.tracks[int(ti)].clips[int(ci)].node_collection.nodes[int(ni)].parameters[int(pi)]
-
-        raise Exception(f"Failed to find {item_key}")
-
-    def get_ptr_from_clip(self, clip):
-        for track_i, track in enumerate(self.tracks):
-            for clip_i, other_clip in enumerate(track.clips):
-                if clip == other_clip:
-                    return f"*track[{track_i}].clip[{clip_i}]"
-
-    def get_clip_from_ptr(self, clip_key):
-        """*track[i].clip[j].+ -> Clip"""
-        match = re.match(r"track\[(\d+)\]\.clip\[(\d+)\]", clip_key[1::])
-        if match:
-            track_i = int(match.groups()[0])
-            clip_i = int(match.groups()[1])
-            return self.tracks[track_i][clip_i]
-        raise RuntimeError(f"Failed to find clip for {clip_key}")
-
+        try:
+            return UUID_DATABASE[id_]
+        except Exception as e:
+            print(UUID_DATABASE)
+            raise
 
 class Result:
     """Command result."""

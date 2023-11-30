@@ -706,8 +706,6 @@ class Gui:
                 
                 with dpg.menu(label="Open Recent"):
                     for filepath in self.cache["recent"]:
-                        logger.info(filepath)
-                        print(filepath)
                         dpg.add_menu_item(label=os.path.basename(filepath), callback=restore_callback2, user_data=filepath)
 
                 dpg.add_menu_item(label="Save", callback=self.save_menu_callback)
@@ -2105,10 +2103,10 @@ class Gui:
                 x_axis_limits_tag = f"{plot_tag}.x_axis_limits"
                 y_axis_limits_tag = f"{plot_tag}.y_axis_limits"
                 dpg.add_plot_axis(dpg.mvXAxis, label="x", tag=x_axis_limits_tag, no_gridlines=True)
-                dpg.set_axis_limits(dpg.last_item(), -AXIS_MARGIN, input_channel.active_automation.length+AXIS_MARGIN)
+                dpg.set_axis_limits(dpg.last_item(), AXIS_MARGIN, input_channel.active_automation.length)
 
                 dpg.add_plot_axis(dpg.mvYAxis, label="y", tag=y_axis_limits_tag, no_gridlines=True)
-                dpg.set_axis_limits(dpg.last_item(), -min_value, max_value*1.01)
+                dpg.set_axis_limits(dpg.last_item(), min_value, max_value)
 
                 dpg.add_line_series(
                     [],
@@ -2143,6 +2141,19 @@ class Gui:
                         dpg.add_menu_item(label="1/4", callback=self.set_quantize, user_data=1)
                         dpg.add_menu_item(label="1/8", callback=self.set_quantize, user_data=0.5)
                         dpg.add_menu_item(label="1/16", callback=self.set_quantize, user_data=0.25)
+                    with dpg.menu(label="Shift (Beats)"):
+                        with dpg.menu(label="Left"):
+                            dpg.add_menu_item(label="4", callback=self.shift_points, user_data=-4)
+                            dpg.add_menu_item(label="2", callback=self.shift_points, user_data=-2)
+                            dpg.add_menu_item(label="1", callback=self.shift_points, user_data=-1)
+                            dpg.add_menu_item(label="1/2", callback=self.shift_points, user_data=-0.5)
+                            dpg.add_menu_item(label="1/4", callback=self.shift_points, user_data=-0.25)
+                        with dpg.menu(label="Right"):
+                            dpg.add_menu_item(label="4", callback=self.shift_points, user_data=4)
+                            dpg.add_menu_item(label="2", callback=self.shift_points, user_data=2)
+                            dpg.add_menu_item(label="1", callback=self.shift_points, user_data=1)
+                            dpg.add_menu_item(label="1/2", callback=self.shift_points, user_data=0.5)
+                            dpg.add_menu_item(label="1/4", callback=self.shift_points, user_data=0.25)
                     with dpg.menu(label="Interpolation Mode"):
                         dpg.add_menu_item(label="Linear", callback=self.set_interpolation, user_data="linear")
                         dpg.add_menu_item(label="Nearest", callback=self.set_interpolation, user_data="nearest")
@@ -2214,6 +2225,11 @@ class Gui:
                 no_title_bar=True,
             ) as window:
                 pass
+
+    def shift_points(self, sender, app_data, user_data):
+        if valid(self._active_input_channel.active_automation):
+            self._active_input_channel.active_automation.shift_points(user_data)
+        self.reset_automation_plot(self._active_input_channel)
 
     def set_quantize(self, sender, app_data, user_data):
         self._quantize_amount = user_data
@@ -2311,28 +2327,24 @@ class Gui:
         dpg.set_value(f"{window_tag}.beats", value=automation.length)
         dpg.set_value(f"{window_tag}.preset_name", value=automation.name)
 
-        # Delete existing points
-        for item in self.gui_state["point_tags"]:
-            dpg.delete_item(item)
-
-        # Add new points
-        point_tags = []
-        for i, x in enumerate(automation.values_x):
-            if x is None:
+        for point in automation.points:
+            if point.deleted:
                 continue
-            y = automation.values_y[i]
-            point_tag = f"{input_channel.id}.{automation.id}.series.{i}"
-            dpg.add_drag_point(
-                color=[0, 255, 255, 255],
-                default_value=[x, y],
-                callback=self.update_automation_point_callback,
-                parent=plot_tag,
-                tag=point_tag,
-                user_data=input_channel,
-                thickness=10,
-            )
-            point_tags.append(point_tag)
-        self.gui_state["point_tags"] = point_tags
+            x, y = point.x, point.y
+            point_tag = f"{point.id}.gui.point"
+
+            if dpg.does_item_exist(point_tag):
+                dpg.set_value(point_tag, value=[point.x, point.y])
+            else:
+                dpg.add_drag_point(
+                    color=[0, 255, 255, 255],
+                    default_value=[x, y],
+                    callback=self.update_automation_point_callback,
+                    parent=plot_tag,
+                    tag=point_tag,
+                    user_data=(automation, point),
+                    thickness=10,
+                )
 
         # Add quantization bars
         y_limits = dpg.get_axis_limits(y_axis_limits_tag)
@@ -2927,10 +2939,6 @@ class Gui:
         # Update automation points
         if valid(self._active_input_channel) and isinstance(self._active_input_channel, model.AutomatableSourceNode) and valid(self._active_input_channel.active_automation):
             automation = self._active_input_channel.active_automation
-            values = sorted(
-                zip(automation.values_x, automation.values_y), 
-                key=lambda t: t[0] if t[0] is not None else 0
-            )
             xs = np.arange(0, self._active_input_channel.active_automation.length, 0.01)
             ys = self._active_input_channel.active_automation.f(xs)
             dpg.configure_item(
@@ -3041,23 +3049,28 @@ class Gui:
         mouse_pos = dpg.get_mouse_pos()
 
         if app_data == 0:
+            # Left double click on the automation plot
             if window_tag is not None and window_tag.endswith(".source_node_window"):
                 plot_mouse_pos = dpg.get_plot_mouse_pos()
                 automation = self._active_input_channel.active_automation
-                for i, x in enumerate(automation.values_x):
-                    if x is None:
+                first_point, last_point = automation.points[0], automation.points[-1]
+                for point in automation.points:
+                    if point.deleted:
                         continue
-                    y = automation.values_y[i]
+                    x, y = point.x, point.y
                     x_axis_limits_tag = f"{self._active_input_channel.id}.plot.x_axis_limits"
                     y_axis_limits_tag = f"{self._active_input_channel.id}.plot.y_axis_limits"
+
+                    # Clicked on a point, try to delete it.
                     if norm_distance((x,y), plot_mouse_pos, dpg.get_axis_limits(x_axis_limits_tag), dpg.get_axis_limits(y_axis_limits_tag)) <= 0.015:
-                        result = self.execute_wrapper(f"remove_automation_point {self._active_input_channel.id} {i}")
+                        if point == first_point or point == last_point:
+                            return
+                        result = self.execute_wrapper(f"delete_automation_point {automation.id} {point.id}")
                         if result.success:
-                            point_tag = f"{self._active_input_channel.id}.{automation.id}.series.{i}"
-                            dpg.delete_item(point_tag)
+                            dpg.delete_item(f"{point.id}.gui.point")
                             return
                         else:
-                            raise RuntimeError("Failed to remove automation point")
+                            raise RuntimeError("Failed to delete automation point")
 
                 point = self._quantize_point(*plot_mouse_pos, self._active_input_channel.dtype, automation.length, quantize_x=False)
                 result = self.execute_wrapper(
@@ -3163,55 +3176,35 @@ class Gui:
 
     def update_automation_point_callback(self, sender, app_data, user_data):
         """Callback when a draggable point it moved."""
-        input_channel = user_data
-        automation = input_channel.active_automation
-        tag = dpg.get_item_alias(sender)
-        point_id, point_index = tag.split(".series.")
-        point_index = int(point_index)
+        automation, point = user_data
 
         x, y, *_ = dpg.get_value(sender)
-        max_x_i = automation.values_x.index(max(automation.values_x, key=lambda x: x or 0))
-        original_x = automation.values_x[point_index]
-        if point_index in [0, max_x_i]:
-            dpg.set_value(sender, (original_x, y))
-            x = original_x
-            x, y = self._quantize_point(x, y, input_channel.dtype, automation.length)
+
+        # First and last point must maintain x position
+        first_point, last_point = automation.points[0], automation.points[-1]
+        if point == first_point or point == last_point:
+            x = point.x
+            x, y = self._quantize_point(x, y, automation.dtype, automation.length)
         else:
+            # Other points must stay in between nearest points
+            index = automation.points.index(point)
+            left_point, right_point = automation.points[index-1], automation.points[index+1]
+            if x < left_point.x:
+                x = left_point.x
+            if x > right_point.x:
+                x = right_point.x
+            x, y = self._quantize_point(x, y, automation.dtype, automation.length, quantize_x=True)
 
-            quantize_x = True
-            delta_x = x - original_x
-            if self._quantize_amount is not None and (abs(delta_x) < self._quantize_amount/3):
-                x = original_x
-                quantize_x = False
-
-            x, y = self._quantize_point(x, y, input_channel.dtype, automation.length, quantize_x=quantize_x)
-
-            # Constrain x between nearest points
-            left_xs, right_xs = [], []
-            for i, x_value in enumerate(automation.values_x):
-                if x_value is None or i == point_index:
-                    continue
-                dist = original_x - x_value
-                if dist < 0:
-                    right_xs.append((i, dist, x_value))
-                else:
-                    left_xs.append((i, dist, x_value))
-
-            right_xs = sorted(right_xs, key=lambda t: abs(t[1]))
-            left_xs = sorted(left_xs, key=lambda t: abs(t[1]))
-            left_x = left_xs[0][2]
-            right_x = right_xs[0][2]
-            x = min(max(x, left_x+model.NEAR_THRESHOLD), right_x-model.NEAR_THRESHOLD)
-
-        dpg.set_value(sender, (x, y))
-
-        result = self.execute_wrapper(f"update_automation_point {automation.id} {point_index} {x},{y}")
+        result = self.execute_wrapper(f"update_automation_point {automation.id} {point.id} {x},{y}")
         if not result.success:
             raise RuntimeError("Failed to update automation point")
 
-    def _quantize_point(self, x, y, dtype, length, quantize_x=True):
+        dpg.set_value(sender, (x, y))
+
+    def _quantize_point(self, x, y, dtype, length, quantize_x=False):
         x2 = x
         y2 = y
+
         if dtype == "bool":
             y2 = int(y > 0.5)
         elif dtype == "int":
@@ -3221,7 +3214,7 @@ class Gui:
             x2 /= self._quantize_amount
             x2 = round(x2)
             x2 *= self._quantize_amount
-            x2 = min(length - 0.0001, max(0, x2))
+            x2 = min(length, max(0, x2))
 
         return x2, y2
 
