@@ -950,7 +950,6 @@ class Gui:
                         dpg.add_button(label="Cancel", callback=cancel)
 
     def select_clip_preset(self, sender, app_data, user_data):
-        print(app_data)
         preset = user_data
         preset.execute()
         if valid(self._active_input_channel):
@@ -2073,7 +2072,7 @@ class Gui:
                 def update_automation_length(sender, app_data, user_data):
                     if app_data:
                         input_channel = user_data
-                        input_channel.active_automation.set_length(app_data)
+                        input_channel.active_automation.set_length(float(app_data))
                         self.reset_automation_plot(input_channel)
 
                 def update_preset_name(sender, app_data, user_data):
@@ -2320,31 +2319,33 @@ class Gui:
         x_axis_limits_tag = f"{plot_tag}.x_axis_limits"
         y_axis_limits_tag = f"{plot_tag}.y_axis_limits"
         
-
         dpg.configure_item(plot_tag, label=input_channel.active_automation.name)
         dpg.set_axis_limits(x_axis_limits_tag, -AXIS_MARGIN, input_channel.active_automation.length+AXIS_MARGIN)
 
         dpg.set_value(f"{window_tag}.beats", value=automation.length)
         dpg.set_value(f"{window_tag}.preset_name", value=automation.name)
 
+        # Always delete and redraw all the points
+        for tag in self.gui_state["point_tags"]:
+            dpg.delete_item(tag)
+    
+        self.gui_state["point_tags"].clear()
         for point in automation.points:
             if point.deleted:
                 continue
-            x, y = point.x, point.y
+            
             point_tag = f"{point.id}.gui.point"
-
-            if dpg.does_item_exist(point_tag):
-                dpg.set_value(point_tag, value=[point.x, point.y])
-            else:
-                dpg.add_drag_point(
-                    color=[0, 255, 255, 255],
-                    default_value=[x, y],
-                    callback=self.update_automation_point_callback,
-                    parent=plot_tag,
-                    tag=point_tag,
-                    user_data=(automation, point),
-                    thickness=10,
-                )
+            x, y = point.x, point.y
+            dpg.add_drag_point(
+                color=[0, 255, 255, 255],
+                default_value=[x, y],
+                callback=self.update_automation_point_callback,
+                parent=plot_tag,
+                tag=point_tag,
+                user_data=(automation, point),
+                thickness=10,
+            )
+            self.gui_state["point_tags"].append(point_tag)
 
         # Add quantization bars
         y_limits = dpg.get_axis_limits(y_axis_limits_tag)

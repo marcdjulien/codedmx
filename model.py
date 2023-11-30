@@ -2,6 +2,7 @@ from collections import defaultdict
 import re
 from threading import Lock
 import scipy
+import numpy as np
 import time
 import operator
 import random
@@ -311,10 +312,11 @@ class AutomatableSourceNode(SourceNode):
                 self.channel.set(value)
             if restarted:
                 self.mode = "recording"
+                self.active_automation.clear()
         elif self.mode == "recording":
             if restarted:
                 self.mode = "automation"
-            point = (current_beat, self.ext_channel.get())
+            point = Point(current_beat, self.ext_channel.get())
             self.active_automation.add_point(point, replace_near=True)
             self.channel.set(self.ext_channel.get())
         elif self.mode == "automation":
@@ -1491,6 +1493,10 @@ class ChannelAutomation(Identifier):
             except Exception as e:
                 logger.warning(e)
                 v = 0
+
+        if np.isnan(v):
+            v = 0
+
         if self.dtype == "bool":
             return int(v > 0.5)
         elif self.dtype == "int":
@@ -1502,12 +1508,43 @@ class ChannelAutomation(Identifier):
         return len(self.points)
 
     def add_point(self, point, replace_near=False):
+        # Hack to make sure the first/lest point is never a deleted point
+        for p in self.points:
+            if p.deleted:
+                p.x = 1e-6
+
         self.points.append(point)
         self.points.sort(key=lambda p: p.x)
         self.reinterpolate()
 
-    def shift_points(self, beats):
-        pass
+    def shift_points(self, amount):
+        # TODO: Not working
+        x1 = 0 - amount
+        x2 = self.length - amount
+        new_first_point = Point(x1, self.value(x1))
+        new_last_point = Point(x2, self.value(x2))
+        
+        self.add_point(new_first_point)
+        self.add_point(new_last_point)
+
+        for point in self.points:
+            point.x += amount
+
+        p = self.points[0]
+        while p.x < 0:
+            self.points.pop(0)
+            self.points.append(p)
+            p.x = p.x % self.length
+            p = self.points[0]
+
+        p = self.points[-1]
+        while p.x > self.length:
+            self.points.pop(-1)
+            self.points.insert(0, p)
+            p.x = p.x % self.length
+            p = self.points[-1]
+
+        self.reinterpolate()
 
     def set_interpolation(self, kind):
         self.interpolation = kind
@@ -1523,7 +1560,6 @@ class ChannelAutomation(Identifier):
         )
 
     def set_length(self, new_length):
-        self.length = new_length
         if new_length > self.length:
             self.add_point(Point(new_length, self.points[-1].y))
         else:
@@ -1533,7 +1569,12 @@ class ChannelAutomation(Identifier):
                 if point.x > new_length:
                     point.deleted = True
             self.add_point(Point(new_length, self.value(new_length)))
+        self.length = new_length
         self.reinterpolate()
+
+    def clear(self):
+        # TODO: This is dangerous since some of the code assume there are always at least two points
+        self.points.clear()
 
     def serialize(self):
         data = super().serialize()
@@ -1565,17 +1606,22 @@ class ClipPreset(Identifier):
         super().__init__()
         self.name = name
         self.presets = presets or []
+        self.speeds = []
+        for channel, automation in self.presets:
+            self.speeds.append(channel.speed)
 
     def execute(self):
-        for preset in self.presets:
+        for i, preset in enumerate(self.presets):
             channel, automation = preset
             channel.set_active_automation(automation)
+            channel.speed = self.speeds[i]
 
     def serialize(self):
         data = super().serialize()
         data.update({
             "name": self.name,
-            "presets": [f"{channel.id}:{automation.id}" for channel, automation in self.presets]
+            "presets": [f"{channel.id}:{automation.id}" for channel, automation in self.presets],
+            "speeds": self.speeds
         })
         return data
 
@@ -1585,7 +1631,7 @@ class ClipPreset(Identifier):
         for preset_ids in data["presets"]:
             channel_id, automation_id = preset_ids.split(":")
             self.presets.append((UUID_DATABASE[channel_id], UUID_DATABASE[automation_id]))
-
+        self.speeds = data["speeds"]
 
 class Clip(Identifier):
     def __init__(self, outputs=[]):
@@ -2472,12 +2518,10 @@ class ProgramState(Identifier):
             automation_id = toks[1]
             automation = self.get_obj(automation_id)
             old_length = automation.length
-            automation.set_length(old_length * 2)
-            for i in range(automation.n_points()):
-                x = automation.values_x[i]
-                y = automation.values_y[i]
-                if x is not None:
-                    automation.add_point((x+old_length+NEAR_THRESHOLD, y))
+            automation.length = (old_length * 2)
+            for point in tuple(automation.points):
+                if not point.deleted:
+                    automation.add_point(Point(point.x+old_length, point.y))
             return Result(True)
 
         elif cmd == "duplicate_preset":
