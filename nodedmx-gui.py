@@ -203,6 +203,9 @@ class NewClip(GuiAction):
             if not result.success:
                 raise RuntimeError("Failed to create clip")
 
+        # Delete the double_click handler to create clips
+        dpg.delete_item(get_clip_slot_group_tag(track_i, clip_i) + ".clip.item_handler_registry")
+
         clip = track.clips[clip_i]
 
         group_tag = get_clip_slot_group_tag(track_i, clip_i)
@@ -223,8 +226,15 @@ class NewClip(GuiAction):
 
         for tag in [text_tag, text_tag+".filler"]:
             with dpg.popup(tag, mousebutton=1):
+                def show_properties_window(sender, app_data, user_data):
+                    self.gui._properties_buffer.clear()
+                    dpg.configure_item(get_properties_window_tag(clip), show=True)
+                dpg.add_menu_item(label="Properties", callback=show_properties_window)
+
                 dpg.add_menu_item(label="Copy", callback=copy_clip_callback, user_data=clip)
                 dpg.add_menu_item(label="Paste", callback=self.gui.paste_clip_callback, user_data=(track_i, clip_i))
+
+
 
         self.last_track = self.gui._active_track
         self.last_clip = self.gui._active_clip
@@ -312,11 +322,6 @@ class NewClip(GuiAction):
             menu_tag = f"{window_tag}.menu_bar"
             with dpg.menu_bar(tag=menu_tag):
                 self.gui.add_node_menu(menu_tag, clip)
-
-                def show_properties_window(sender, app_data, user_data):
-                    self.gui._properties_buffer.clear()
-                    dpg.configure_item(get_properties_window_tag(clip), show=True)
-                dpg.add_menu_item(label="Properties", callback=show_properties_window)
 
                 dpg.add_menu_item(label="Save Preset", callback=self.gui.show_presets_window, user_data=clip)
 
@@ -620,22 +625,6 @@ class Gui:
             for fixture in loaded_fixtures:
                 self.add_fixture(None, None, (self._active_track, fixture))
 
-        with dpg.window(tag="rename_node.popup", label="Rename Node", no_title_bar=True, modal=True, show=False, height=10, pos=(SCREEN_WIDTH/2, SCREEN_HEIGHT/2)):
-            def set_name_property(sender, app_data, user_data):
-                node_editor_tag = get_node_editor_tag(self._active_clip)
-                items = dpg.get_selected_nodes(node_editor_tag)
-                if items and app_data:
-                    item = items[0]
-                    alias = dpg.get_item_alias(item)
-                    node_id = alias.replace(".node", "").rsplit(".", 1)[-1]
-                    obj = self.state.get_obj(node_id)
-                    obj.name = app_data
-                    dpg.configure_item(get_node_tag(self._active_clip, obj), label=obj.name)
-                    dpg.set_value(f"{obj.id}.name", obj.name)
-                dpg.configure_item("rename_node.popup", show=False)
-
-            dpg.add_input_text(tag="rename_node.text", on_enter=True, callback=set_name_property)
-
         with dpg.viewport_menu_bar():
             dpg.add_file_dialog(
                 directory_selector=True, 
@@ -717,6 +706,17 @@ class Gui:
                     dpg.focus_item("io.gui.window")                    
                 dpg.add_menu_item(label="I/O", callback=show_io_window)
 
+                def show_performance_presets_window():
+                    dpg.configure_item("performance_preset.gui.window", show=True)
+                    dpg.focus_item("performance_preset.gui.window")
+                dpg.add_menu_item(label="Performance Preset Window", callback=show_performance_presets_window)
+
+                def show_scripting_window():
+                    dpg.configure_item("scripting.gui.window", show=True)
+                    dpg.focus_item("scripting.gui.window")     
+                dpg.add_menu_item(label="Scripting", callback=show_scripting_window)
+
+
                 def show_inspector():
                     dpg.configure_item("inspector.gui.window", show=False)
                     dpg.configure_item("inspector.gui.window", show=True)
@@ -768,6 +768,9 @@ class Gui:
 
         self.create_inspector_window()
         self.create_io_window()
+        self.create_scripting_window()
+        self.create_performance_preset_window()
+        self.create_rename_window()
 
         logging.debug("Restoring GUI state.")
         self.restore_gui_state()
@@ -812,7 +815,7 @@ class Gui:
         else:
             dpg.bind_item_theme("play_button", "transport.play_button.pause.theme")
 
-    def register_handler(self, add_item_handler_func, tag, function, user_data):
+    def register_handler(self, add_item_handler_func, tag, function, user_data=None):
         handler_registry_tag = f"{tag}.item_handler_registry"
         if not dpg.does_item_exist(handler_registry_tag):
             dpg.add_item_handler_registry(tag=handler_registry_tag)
@@ -918,6 +921,7 @@ class Gui:
                     preset = result.payload
                     self.add_clip_preset_gui(clip, preset)
                     dpg.delete_item(preset_window_tag)
+                    self.create_performance_preset_window()
                 else:
                     logger.warning("Failed to add clip preset")
 
@@ -1004,9 +1008,13 @@ class Gui:
             dpg.add_menu_item(
                 label="Binary Operator", user_data=("create", ("binary_operator", None, clip), right_click_menu), callback=self.add_function_node
             )
-            dpg.add_menu_item(
-                label="Buffer", user_data=("create", ("buffer", None, clip), right_click_menu), callback=self.add_function_node
-            )   
+            with dpg.menu(label="Delay"):
+                dpg.add_menu_item(
+                    label="Beats", user_data=("create", ("delay_beats", None, clip), right_click_menu), callback=self.add_function_node
+                )         
+                dpg.add_menu_item(
+                    label="Time", user_data=("create", ("delay", None, clip), right_click_menu), callback=self.add_function_node
+                )   
             dpg.add_menu_item(
                 label="Changing", user_data=("create", ("changing", None, clip), right_click_menu), callback=self.add_function_node
             )   
@@ -1065,6 +1073,9 @@ class Gui:
             dpg.add_menu_item(
                 label="ToggleOnChange", user_data=("create", ("toggle_on_change", None, clip), right_click_menu), callback=self.add_function_node
             )
+            dpg.add_menu_item(
+                label="Transition", user_data=("create", ("transition", None, clip), right_click_menu), callback=self.add_function_node
+            )
         with dpg.menu(parent=parent,label="Custom"):
             dpg.add_menu_item(
                 label="New Custom Node", user_data=("create", ("custom", None, clip), right_click_menu), callback=self.add_custom_function_node
@@ -1111,7 +1122,9 @@ class Gui:
             if not result.success:  
                 raise RuntimeError("Failed to create input")
             input_channel = result.payload
-
+            if isinstance(app_data, str):
+                input_channel.name = app_data
+                
         else: # restore
             clip, input_channel = args
 
@@ -1210,6 +1223,8 @@ class Gui:
             if not result.success:  
                 raise RuntimeError("Failed to create input")
             input_channel = result.payload
+            if isinstance(app_data, str):
+                input_channel.name = app_data
 
             result = self.execute_wrapper(f"add_automation {input_channel.id}")
             if not result.success:  
@@ -1329,6 +1344,8 @@ class Gui:
             if not result.success:
                 return
             node = result.payload
+            if isinstance(app_data, str):
+                node.name = app_data
             self._last_add_function_node = (sender, app_data, user_data)
         else: # restore
             clip, node = args
@@ -1999,8 +2016,6 @@ class Gui:
             src_channels.extend(src.outputs)
 
         for src_channel in src_channels:
-            if any(link.src_channel == src_channel and valid(link) for link in clip.node_collection.links):
-                continue
             for dst_channel in dst_channels:
                 if any(link.dst_channel == dst_channel and valid(link) for link in clip.node_collection.links):
                     continue
@@ -2130,6 +2145,7 @@ class Gui:
                     x=dpg.get_axis_limits(x_axis_limits_tag),
                     y=dpg.get_axis_limits(y_axis_limits_tag),
                 )
+
                 with dpg.popup(plot_tag, mousebutton=1):
                     dpg.add_menu_item(label="Double Automation", callback=self.double_automation)
                     dpg.add_menu_item(label="Duplicate Preset", callback=self.duplicate_preset)
@@ -2167,6 +2183,13 @@ class Gui:
             dpg.bind_item_theme(playhead_tag, "playhead_line.theme")
             dpg.bind_item_theme(ext_value_tag, "bg_line.theme")
             dpg.bind_item_theme(series_tag, "automation_line.theme")
+
+            def show_popup(sender, app_data, user_data):
+                input_channel = user_data
+                popup_tag = f"{input_channel.id}.gui.popup"
+                # Right click
+                if app_data[0] == 1:
+                    dpg.configure_item(item=popup_tag, show=True)            
 
     def create_source_node_window(self, clip, input_channel):
         parent = get_source_node_window_tag(input_channel)
@@ -2209,6 +2232,7 @@ class Gui:
                         dpg.add_theme_color(tag=f"{node_theme}.color3", target=dpg.mvNodeCol_NodeBackgroundSelected, value=default_color, category=dpg.mvThemeCat_Nodes)
                 dpg.bind_item_theme(get_node_tag(clip, input_channel), node_theme)
                 dpg.add_color_picker(width=height*0.8, height=height, callback=update_color, user_data=input_channel, default_value=default_color)
+        
         # ButtonNode
         elif input_type == "button":
             width = 520
@@ -2307,7 +2331,6 @@ class Gui:
         if result.success:
             self.reset_automation_plot(input_channel)
 
-
     def reset_automation_plot(self, input_channel):
         if not isinstance(input_channel, model.AutomatableSourceNode):
             return
@@ -2343,7 +2366,7 @@ class Gui:
                 parent=plot_tag,
                 tag=point_tag,
                 user_data=(automation, point),
-                thickness=10,
+                thickness=1,
             )
             self.gui_state["point_tags"].append(point_tag)
 
@@ -2505,9 +2528,114 @@ class Gui:
 
                         dpg.add_table_cell()
 
-        ###############
-        ### Restore ###
-        ###############
+    def create_performance_preset_window(self):
+        try:
+            dpg.delete_item("performance_preset.gui.window")
+        except Exception as e:
+            pass
+
+        with dpg.window(
+            label=f"All Presets",
+            width=800,
+            height=800,
+            pos=(100, 100),
+            show=False,
+            tag="performance_preset.gui.window"
+        ) as window:
+            with dpg.table(tag="performance_preset.table"):
+
+                for i, track in enumerate(self.state.tracks):
+                    dpg.add_table_column(label=track.name)
+
+                clips_per_track = len(self.state.tracks[0].clips)
+                for clip_i in range(clips_per_track):
+                    with dpg.table_row():
+                        for track_i, track in enumerate(self.state.tracks):
+                            clip = track.clips[clip_i]
+                            with dpg.table_cell():
+                                if clip is None:
+                                    with dpg.group():
+                                        pass
+                                else:
+                                    with dpg.group(tag=f"{clip.id}.performance_preset_window.group"):
+                                        dpg.add_text(source=f"{clip.id}.name")
+                                        for preset in clip.presets:
+                                            dpg.add_button(label=preset.name)
+
+    def create_scripting_window(self):
+        def run_script(sender):
+            # Available scripting functions
+            right_click_menu = False
+            def add_input(name, input_type):
+                self.add_source_node(None, name, user_data=("create", (self._active_clip, input_type), right_click_menu))
+
+            def add_function(name, function_type, arg=None):
+                right_click_menu = False
+                self.add_function_node(None, name, user_data=("create", (function_type, arg, self._active_clip), right_click_menu))
+
+            def connect(src, dst):
+                self.add_link_callback(None, None, user_data=("create", self._active_clip, src, dst))
+
+            def delete(obj):
+                # TODO: Need to modify self.delete_selected_nodes to work with objects as well
+                pass
+
+            def disconnect(obj):
+                self.delete_associated_links(obj.inputs + obj.outputs)
+
+            if self._active_clip is None:
+                logger.warning("Cannot execute code on invalid clip")
+                return
+
+            # Available objects to interact with
+            nodes = {
+                node.name: node
+                for node in self._active_clip.node_collection.nodes
+                if not node.deleted
+            }
+            
+            inputs = {
+                src.name: src
+                for src in self._active_clip.inputs
+                if not src.deleted
+            }
+            
+            outputs = {
+                output.name: output
+                for output in self._active_clip.outputs
+                if not output.deleted
+            }
+
+            code = dpg.get_value("scripting.code")
+            try:
+                exec(code)
+            except BaseException as e:
+                print(F"Error: {e}")
+
+        window_tag = "scripting.gui.window"
+        with dpg.window(
+            tag=window_tag,
+            label=f"Scripting",
+            width=515,
+            height=500,
+            pos=(SCREEN_WIDTH/3,SCREEN_HEIGHT/3),
+            show=False,
+        ) as window:
+            # Code                        
+            dpg.add_input_text(
+                tag=f"scripting.code",
+                multiline=True,
+                tab_input=True,
+                width=500,
+                height=400
+            )
+
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Run", callback=run_script)
+                def hide_window():
+                    dpg.configure_item("scripting.gui.window", show=False)
+                dpg.add_button(label="Cancel", callback=hide_window)
+
 
     def create_track_output_configuration_window(self, track, show=False):
         window_tag = get_output_configuration_window_tag(track)
@@ -2558,6 +2686,29 @@ class Gui:
                 self.add_track_output_group(sender=None, app_data=None, user_data=("restore", track, output_channel))
             else:
                 self.add_track_output(sender=None, app_data=None, user_data=("restore", track, output_channel))
+
+    def create_rename_window(self):
+        # Rename popup window
+        with dpg.window(tag="rename_node.popup", label="Rename", no_title_bar=True, no_background=False, modal=False, show=False, autosize=True, pos=(2*SCREEN_WIDTH/5, SCREEN_HEIGHT/3)):
+            def set_name_property(sender, app_data, user_data):
+                if self._active_clip is not None and app_data:
+                    node_editor_tag = get_node_editor_tag(self._active_clip)
+                    items = dpg.get_selected_nodes(node_editor_tag)
+                    # Renaming a node
+                    if items:
+                        item = items[0]
+                        alias = dpg.get_item_alias(item)
+                        node_id = alias.replace(".node", "").rsplit(".", 1)[-1]
+                        obj = self.state.get_obj(node_id)
+                        obj.name = app_data
+                        dpg.configure_item(get_node_tag(self._active_clip, obj), label=obj.name)
+                        dpg.set_value(f"{obj.id}.name", obj.name)
+                    # Renaming a clip
+                    else:
+                        self._active_clip.name = app_data
+                        dpg.set_value(f"{self._active_clip.id}.name", app_data)
+                dpg.configure_item("rename_node.popup", show=False)
+            dpg.add_input_text(tag="rename_node.text", on_enter=True, callback=set_name_property)
 
     def add_track_output(self, sender, app_data, user_data):  
         action = user_data[0]
@@ -3004,6 +3155,10 @@ class Gui:
                     color[3] = alpha
                 dpg.highlight_table_cell(table_tag, i, 3, color=color)                    
 
+    def mouse_inside_window(self, window_tag):
+        window_x, window_y = dpg.get_item_pos(window_tag)
+        window_x2, window_y2 = window_x + dpg.get_item_width(window_tag), window_y + dpg.get_item_height(window_tag)
+        return inside((self.mouse_x, self.mouse_y), (window_x, window_x2, window_y+10, window_y2))
 
     def mouse_move_callback(self, sender, app_data, user_data):
         cur_x, cur_y = app_data
@@ -3024,9 +3179,7 @@ class Gui:
         if app_data == 0:
             if self._active_clip is not None:
                 tag = get_node_window_tag(self._active_clip)
-                window_x, window_y = dpg.get_item_pos(tag)
-                window_x2, window_y2 = window_x + dpg.get_item_width(tag), window_y + dpg.get_item_height(tag)
-                self.node_editor_window_is_focused = inside((self.mouse_x, self.mouse_y), (window_x, window_x2, window_y+10, window_y2))
+                self.node_editor_window_is_focused = self.mouse_inside_window(tag)
         elif app_data == 1:
             self.mouse_clickr_x, self.mouse_clickr_y = self.mouse_x, self.mouse_y
 
@@ -3051,7 +3204,7 @@ class Gui:
 
         if app_data == 0:
             # Left double click on the automation plot
-            if window_tag is not None and window_tag.endswith(".source_node_window"):
+            if window_tag is not None and self.mouse_inside_window(window_tag):
                 plot_mouse_pos = dpg.get_plot_mouse_pos()
                 automation = self._active_input_channel.active_automation
                 first_point, last_point = automation.points[0], automation.points[-1]
@@ -3122,8 +3275,14 @@ class Gui:
                 if valid(self._active_clip):
                     node_editor_tag = get_node_editor_tag(self._active_clip)
                     items = dpg.get_selected_nodes(node_editor_tag)
-                if items:
-                    dpg.set_value("rename_node.text", "")
+                    if items:
+                        item = items[0]
+                        alias = dpg.get_item_alias(item)
+                        node_id = alias.replace(".node", "").rsplit(".", 1)[-1]
+                        obj = self.state.get_obj(node_id)
+                        dpg.set_value("rename_node.text", obj.name)
+                    else:
+                        dpg.set_value("rename_node.text", self._active_clip.name)
                     dpg.configure_item("rename_node.popup", show=True)
                     dpg.focus_item("rename_node.text")
             elif self.state.mode == "performance":

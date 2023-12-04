@@ -366,11 +366,10 @@ class AutomatableSourceNode(SourceNode):
             for automation in self.automations:
                 if automation.deleted:
                     continue
-                for i, x in enumerate(automation.values_x):
-                    if x is None:
+                for point in automation.points:
+                    if point.deleted:
                         continue
-                    y = automation.values_y[i]
-                    automation.update_point(i, (x, clamp(y, min_value, max_value)))
+                    point.y = clamp(point.y, min_value, max_value)
             return True
         else:
             return super().update_parameter(index, value)
@@ -762,7 +761,7 @@ class FunctionBinaryOperator(FunctionNode):
             self.outputs[0].set(self.f(self.inputs[0].get(), self.inputs[1].get()))
 
     def update_parameter(self, index, value):
-        if self.parameters[index] == self.op_parameter and value in ["+", "-", "/", "*"]:
+        if self.parameters[index] == self.op_parameter and value in ["+", "-", "/", "*", "%", "=="]:
             self.parameters[index].value = value
 
             # TODO: Add other operators
@@ -771,6 +770,8 @@ class FunctionBinaryOperator(FunctionNode):
                 "-": operator.sub,
                 "/": operator.truediv,
                 "*": operator.mul,
+                "%": operator.mod,
+                "==": operator.eq,
             }[value]
             return True
         else:
@@ -965,7 +966,7 @@ class FunctionGlobalSender(FunctionNode):
         self.type = "global_sender"
 
     def transform(self):
-        self.outputs[0].set(_STATE.global_vars.get(self.var_parameter.value))
+        self.outputs[0].set(_STATE.global_vars.get(self.var_parameter.value, 0))
 
     def update_parameter(self, index, value):
         if self.parameters[index] == self.var_parameter:
@@ -1203,24 +1204,56 @@ class FunctionSampleTrigger(FunctionNode):
         self._last_value = trigger
 
 
-class FunctionBuffer(FunctionNode):
-    nice_title = "Buffer"
+class FunctionTransition(FunctionNode):
+    nice_title = "Transition"
 
-    def __init__(self, args="", name="Buffer"):
+    def __init__(self, args="", name="Transition"):
         super().__init__(args, name)
         self.inputs = [
-            Channel(direction="in", name=f"n", dtype="int"),
-            Channel(direction="in", name=f"in", dtype="any")
+            Channel(direction="in", dtype="any", name=f"a"),
+            Channel(direction="in", dtype="any", name=f"b"),
+            Channel(direction="in", dtype="float", name=f"mix"),
         ]
         self.outputs.append(
-            Channel(direction="out", name=f"out", dtype="any")
+            Channel(direction="out", dtype="any", name=f"z")
         )
-        self.type = "buffer"
+        self.type = "transition"
+
+    def transform(self):
+        a = self.inputs[1].get()
+        b = self.inputs[0].get()
+        mix = clamp(self.inputs[2].get(), 0.0, 1.0)
+
+        result = None
+        if isinstance(a, (float, int)) and isinstance(b, (float, int)):
+            result = (a * mix) + (b * (1.0 - mix))
+        else:
+            result = []
+            for i, x in enumerate(a):
+                r = (x * mix) + (b[i] * (1.0 - mix))
+                result.append(r)
+
+        self.outputs[0].set(result)
+
+
+class FunctionDelay(FunctionNode):
+    nice_title = "Delay"
+
+    def __init__(self, args="", name="Delay"):
+        super().__init__(args, name)
+        self.inputs = [
+            Channel(direction="in", name=f"time", dtype="float"),
+            Channel(direction="in", name=f"in", dtype="any")
+        ]
+        self.outputs = [
+            Channel(direction="out", name=f"out", dtype="any")
+        ]
+        self.type = "delay"
 
         self._buffer = []
 
     def transform(self):
-        n = self.inputs[0].get()
+        n = self.get_n()
         cur_value = self.inputs[1].get()
         n_buf = len(self._buffer)
         
@@ -1240,6 +1273,31 @@ class FunctionBuffer(FunctionNode):
 
         self._buffer.insert(0, cur_value)
         self.outputs[0].set(self._buffer.pop())
+
+    def get_n(self):
+        return int(self.inputs[0].get()*60)
+
+
+class FunctionDelayBeats(FunctionDelay):
+    nice_title = "Delay Beats"
+
+    def __init__(self, args="", name="Delay (Beats)"):
+        super().__init__(args, name)
+        self.inputs = [
+            Channel(direction="in", name=f"beats", dtype="float"),
+            Channel(direction="in", name=f"in", dtype="any")
+        ]
+        self.outputs = [
+            Channel(direction="out", name=f"out", dtype="any")
+        ]
+        self.type = "delay_beats"
+
+        self._buffer = []
+
+    def get_n(self):
+        beats = self.inputs[0].get()
+        time_s = (beats / _STATE.tempo) * 60.0
+        return int(time_s * 60)
 
 
 class FunctionCanvas1x8(FunctionNode):
@@ -1331,26 +1389,28 @@ class FunctionPixelMover1(FunctionNode):
 
 
 FUNCTION_TYPES = {
-    "custom": FunctionCustomNode,
+    "aggregator": FunctionAggregator,
     "binary_operator": FunctionBinaryOperator,
-    "scale": FunctionScale,
-    "sequencer": FunctionSequencer,
+    "delay": FunctionDelay,
+    "delay_beats": FunctionDelayBeats,
+    "changing": FunctionChanging,
+    "custom": FunctionCustomNode,
     "demux": FunctionDemux,
-    "multiplexer": FunctionMultiplexer,
-    "passthrough": FunctionPassthrough,
     "global_receiver": FunctionGlobalReceiver,
     "global_sender": FunctionGlobalSender,
-    "time_s": FunctionTimeSeconds,
-    "time_beat": FunctionTimeBeats,
-    "changing": FunctionChanging,
-    "toggle_on_change": FunctionToggleOnChange,
     "last_changed": FunctionLastChanged,
-    "aggregator": FunctionAggregator,
-    "separator": FunctionSeparator,
+    "multiplexer": FunctionMultiplexer,
+    "passthrough": FunctionPassthrough,
     "random": FunctionRandom,
+    "scale": FunctionScale,
+    "sequencer": FunctionSequencer,
+    "separator": FunctionSeparator,
     "sample": FunctionSample,
     "sample_trigger": FunctionSampleTrigger,
-    "buffer": FunctionBuffer,
+    "time_beat": FunctionTimeBeats,
+    "time_s": FunctionTimeSeconds,
+    "transition": FunctionTransition,
+    "toggle_on_change": FunctionToggleOnChange,
     "canvas1x8": FunctionCanvas1x8,
     "pixelmover1": FunctionPixelMover1,
 }
@@ -1592,14 +1652,14 @@ class ChannelAutomation(Identifier):
 
         self.name = data["name"]
         self.dtype = data["dtype"]
+        self.points = []
         for point_data in data["points"]:
             point = Point()
             point.deserialize(point_data)
             self.points.append(point)
+        self.length = data["length"]
         self.name = data["name"]
         self.set_interpolation(data["interpolation"])
-        self.set_length(data["length"])
-
 
 class ClipPreset(Identifier):
     def __init__(self, name=None, presets=None):
@@ -1885,7 +1945,8 @@ class EthernetDmxOutput(IO):
             self.dmx_connection.render()
             self.update_io_time()
         except Exception as e:
-            raise e
+            logger.warning(e)
+
 
     def connect(self):
         try:
@@ -1933,7 +1994,7 @@ class NodeDmxClientOutput(IO):
 
     def connect(self):
         try:
-            self.dmx_client = dmxio.DmxConnection((self.host, self.port))
+            self.dmx_client = dmxio.NodeDmxClient((self.host, self.port), 1, 512)
         except Exception as e:
             logger.warning(e)
 
