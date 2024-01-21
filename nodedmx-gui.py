@@ -3096,27 +3096,31 @@ class Gui:
     def update_gui_from_state(self):
         dpg.configure_item("play_button", label="[Pause]" if self.state.playing else "[Play]")
 
-        if valid(self._active_clip):
+        # Cache the active clip, since it can change while this function is running
+        c_active_clip = self._active_clip
+        c_active_input_channel = self._active_input_channel
+
+        if valid(c_active_clip):
             # This is only setting the GUI value, so we only need to update the active clip.
-            for dst_channel in self.get_all_valid_dst_channels(self._active_clip):
+            for dst_channel in self.get_all_valid_dst_channels(c_active_clip):
                 if hasattr(dst_channel, "dmx_address"):
-                    tag = get_output_node_value_tag(self._active_clip, dst_channel)
+                    tag = get_output_node_value_tag(c_active_clip, dst_channel)
                 else:
                     tag = f"{dst_channel.id}.value"
                 dpg.set_value(tag, dst_channel.get())
 
             # This is only setting the GUI value, so we only need to update the active clip.
-            for src_channel in self.get_all_valid_node_src_channels(self._active_clip):
+            for src_channel in self.get_all_valid_node_src_channels(c_active_clip):
                 tag = f"{src_channel.id}.value"
                 dpg.set_value(tag, src_channel.get())
 
         # Update automation points
-        if valid(self._active_input_channel) and isinstance(self._active_input_channel, model.AutomatableSourceNode) and valid(self._active_input_channel.active_automation):
-            automation = self._active_input_channel.active_automation
-            xs = np.arange(0, self._active_input_channel.active_automation.length, 0.01)
-            ys = self._active_input_channel.active_automation.f(xs).astype(float if self._active_input_channel.dtype == "float" else int)
+        if valid(c_active_input_channel) and isinstance(c_active_input_channel, model.AutomatableSourceNode) and valid(c_active_input_channel.active_automation):
+            automation = c_active_input_channel.active_automation
+            xs = np.arange(0, c_active_input_channel.active_automation.length, 0.01)
+            ys = c_active_input_channel.active_automation.f(xs).astype(float if c_active_input_channel.dtype == "float" else int)
             dpg.configure_item(
-               f"{self._active_input_channel.id}.series",
+               f"{c_active_input_channel.id}.series",
                 x=xs,
                 y=ys,
             )
