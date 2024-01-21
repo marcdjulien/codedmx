@@ -6,7 +6,7 @@ from copy import copy
 import math
 import time
 import pickle
-from threading import RLock
+from threading import RLock, Thread
 import numpy as np
 import os
 import mido
@@ -214,7 +214,7 @@ class NewClip(GuiAction):
                 dpg.delete_item(child_tag)
 
         with dpg.group(parent=group_tag, horizontal=True, horizontal_spacing=5):
-            dpg.add_button(arrow=True, direction=dpg.mvDir_Right, tag=f"{clip.id}.gui.play_button", callback=self.gui.play_clip_callback, user_data=(track,clip))                        
+            dpg.add_button(arrow=True, direction=dpg.mvDir_Right, tag=f"{clip.id}.gui.play_button", callback=self.gui.toggle_clip_play_callback, user_data=(track,clip))                        
         
         clip_tag = group_tag + ".clip"
         with dpg.group(parent=group_tag, tag=clip_tag, horizontal=True, horizontal_spacing=5):
@@ -449,12 +449,24 @@ class Gui:
 
     def main_loop(self):
         logging.debug("Starting main loop")
+
+        def update():
+            period = 1/60.0
+            while True:
+                t_start = time.time()
+                self.state.update()
+                t_end = time.time()
+                delta_t = t_end = t_start
+                if delta_t < period:
+                    time.sleep(period-delta_t)
+        
+        thread = Thread(target=update)
+        thread.daemon = True
+        thread.start()
         try:
             while dpg.is_dearpygui_running():
                 with self.lock:
                     self.update_state_from_gui()
-                self.state.update()
-                with self.lock:
                     self.update_gui_from_state()
                 dpg.render_dearpygui_frame()
             
@@ -803,6 +815,12 @@ class Gui:
         self.update_clip_window()
 
     def play_clip_callback(self, sender, app_data, user_data):
+        track, clip = user_data
+        result = self.execute_wrapper(f"play_clip {track.id} {clip.id}")
+        if result.success:
+            self.update_clip_window()
+
+    def toggle_clip_play_callback(self, sender, app_data, user_data):
         track, clip = user_data
         result = self.execute_wrapper(f"toggle_clip {track.id} {clip.id}")
         if result.success:
@@ -1805,8 +1823,6 @@ class Gui:
                 if isinstance(src, model.FunctionNode):
                     if app_data: 
                         for channel in src.outputs:
-                            if any(link.src_channel == channel and valid(link) for link in clip.node_collection.links):
-                                continue
                             src_channel = channel
                             break
                         else:
@@ -2010,7 +2026,7 @@ class Gui:
 
     def connect_nodes(self, clip, src, dst_channels):
         src_channels = []
-        if isinstance(src, model.Channel):
+        if isinstance(src, model.SourceNode):
             src_channels.append(src)
         if isinstance(src, model.FunctionNode):
             src_channels.extend(src.outputs)
@@ -2534,6 +2550,11 @@ class Gui:
         except Exception as e:
             pass
 
+        def play_clip_preset(sender, app_data, user_data):
+            track, clip, preset = user_data
+            self.play_clip_callback(None, None, (track, clip))
+            preset.execute()
+
         with dpg.window(
             label=f"All Presets",
             width=800,
@@ -2560,7 +2581,7 @@ class Gui:
                                     with dpg.group(tag=f"{clip.id}.performance_preset_window.group"):
                                         dpg.add_text(source=f"{clip.id}.name")
                                         for preset in clip.presets:
-                                            dpg.add_button(label=preset.name)
+                                            dpg.add_button(label=preset.name, callback=play_clip_preset, user_data=(track, clip, preset))
 
     def create_scripting_window(self):
         def run_script(sender):
@@ -2610,7 +2631,7 @@ class Gui:
             try:
                 exec(code)
             except BaseException as e:
-                print(F"Error: {e}")
+                logger.warning(F"Error: {e}")
 
         window_tag = "scripting.gui.window"
         with dpg.window(
@@ -2740,8 +2761,9 @@ class Gui:
         track = user_data[1]
         if action == "create":
             starting_address = user_data[2]
-            channel_names = user_data[3]
-            result = self.execute_wrapper(f"create_output_group {track.id} {starting_address} {','.join(channel_names)}")
+            group_name = user_data[3]
+            channel_names = user_data[4]
+            result = self.execute_wrapper(f"create_output_group {track.id} {starting_address} {group_name} {','.join(channel_names)}")
             if not result.success:
                 return
             output_channel_group = result.payload
@@ -2778,7 +2800,7 @@ class Gui:
         for output_channel in track.outputs:
             starting_address = max(starting_address, output_channel.dmx_address + 1)
 
-        self.add_track_output_group(None, None, ("create", track, starting_address, fixture.channels))
+        self.add_track_output_group(None, None, ("create", track, starting_address, fixture.name, fixture.channels))
 
     ###
 
@@ -3092,7 +3114,7 @@ class Gui:
         if valid(self._active_input_channel) and isinstance(self._active_input_channel, model.AutomatableSourceNode) and valid(self._active_input_channel.active_automation):
             automation = self._active_input_channel.active_automation
             xs = np.arange(0, self._active_input_channel.active_automation.length, 0.01)
-            ys = self._active_input_channel.active_automation.f(xs)
+            ys = self._active_input_channel.active_automation.f(xs).astype(float if self._active_input_channel.dtype == "float" else int)
             dpg.configure_item(
                f"{self._active_input_channel.id}.series",
                 x=xs,

@@ -16,6 +16,9 @@ address: <DMX Start Address>
 <Channel N Name>
 """
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Fixture:
 	def __init__(self, name, channels, address):
@@ -28,6 +31,7 @@ FIXTURE_DIR = "fixtures"
 FIXTURES = []
 
 def parse_fixture(filepath):
+	logger.info("Reading %s", filepath)
 	fixtures = []
 	with open(filepath, 'r') as f:
 		lines = f.readlines()
@@ -53,7 +57,7 @@ def parse_fixture(filepath):
 					try:
 						address = int(address)
 					except:
-						return []
+						raise RuntimeError("Invalid fixture file")
 					parse_state = "collecting_channel_names"
 			elif parse_state == "collecting_channel_names":
 				if line.startswith("name:"):
@@ -64,11 +68,12 @@ def parse_fixture(filepath):
 					channels = []
 					parse_state = "searching_address"
 				elif line.startswith("address:"):
-					return []
+					raise RuntimeError("Invalid fixture file")
 				else:
 					channels.append(line)
 
 		if name and address and channels:
+			logger.info("Successfully loaded %s", name)
 			fixtures.append(Fixture(name, channels, address))
 		return fixtures
 

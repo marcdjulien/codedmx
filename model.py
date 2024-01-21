@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 # For Custom Fuction Nodes
 import colorsys
+from math import *
 
 def clamp(x, min_value, max_value):
     return min(max(min_value, x), max_value)
@@ -139,7 +140,10 @@ class Channel(Identifier):
         self.name = kwargs.get("name", "Channel")
 
     def get(self):
-        return cast[self.dtype](self.value)
+        try:
+            return cast[self.dtype](self.value)
+        except:
+            return 0
 
     def set(self, value):
         self.value = value
@@ -1166,19 +1170,17 @@ class FunctionSample(FunctionNode):
         )
         self.type = "sample"
 
-        self._cycles_held = 0
+        self._last_sample_time = 0
 
     def transform(self):
-        self._cycles_held += 1 
-        s_held = self._cycles_held/60.0
 
         rate = self.inputs[0].get()
         if rate <= 0:
             return
-        if s_held <= rate:
+        if (time.time() - self._last_sample_time) < rate:
             return
         else:
-            self._cycles_held = 0
+            self._last_sample_time = time.time()
             self.outputs[0].set(self.inputs[1].get())
 
 
@@ -1661,6 +1663,7 @@ class ChannelAutomation(Identifier):
         self.name = data["name"]
         self.set_interpolation(data["interpolation"])
 
+
 class ClipPreset(Identifier):
     def __init__(self, name=None, presets=None):
         super().__init__()
@@ -1828,8 +1831,8 @@ class Track(Identifier):
                 clip.outputs = self.outputs
         return new_output
 
-    def create_output_group(self, address, channel_names):
-        new_output_group = DmxOutputGroup(channel_names, address)
+    def create_output_group(self, address, channel_names, group_name):
+        new_output_group = DmxOutputGroup(channel_names, address, name=group_name)
         self.outputs.append(new_output_group)
         for clip in self.clips:
             if clip is not None:
@@ -2315,6 +2318,7 @@ class ProgramState(Identifier):
         allowed_performance_commands = [
             "set_active_automation",
             "toggle_clip",
+            "play_clip",
             "update_parameter"
         ]
 
@@ -2328,7 +2332,7 @@ class ProgramState(Identifier):
             if cmd not in allowed_performance_commands:
                 return Result(False)
 
-        if cmd == "toggle_clip" and self.mode == "performance":
+        if cmd == "toggle_clip":
             track_id = toks[1]
             clip_id = toks[2]
             track = self.get_obj(track_id)
@@ -2340,6 +2344,19 @@ class ProgramState(Identifier):
             clip.toggle()
             if clip.playing:
                 self.playing = True
+            return Result(True)
+
+        if cmd == "play_clip":
+            track_id = toks[1]
+            clip_id = toks[2]
+            track = self.get_obj(track_id)
+            clip = self.get_obj(clip_id)
+            for other_clip in track.clips:
+                if other_clip is None or clip == other_clip:
+                    continue
+                other_clip.stop()
+            clip.start()
+            self.playing = True
             return Result(True)
 
         elif cmd == "new_clip":
@@ -2368,8 +2385,9 @@ class ProgramState(Identifier):
             track_id = toks[1]
             track = self.get_obj(track_id)
             address = int(toks[2])
-            channel_names = full_command.split(" ", 3)[-1].split(',')
-            new_output_group = track.create_output_group(address, channel_names)
+            group_name = toks[3]
+            channel_names = full_command.split(" ", 4)[-1].split(',')
+            new_output_group = track.create_output_group(address, channel_names, group_name)
             return Result(True, new_output_group)
 
         elif cmd == "create_link":
