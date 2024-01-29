@@ -1,3 +1,8 @@
+"""
+TODO: 
+    * Change tab color for currently playing automation, update on every cycle like update_clip_window()
+"""
+
 import dearpygui.dearpygui as dpg
 import model
 import fixtures
@@ -102,17 +107,6 @@ class GuiAction:
         self.state = self.gui.state
         self.params = params or {}
 
-    def gui_lock_callback(func):
-        def wrapper(self, *args, **kwargs):
-            with self.gui.lock:
-                return func(self, *args, **kwargs)
-        return wrapper
-
-    @gui_lock_callback
-    def execute(self):
-        raise NotImplemented
-
-    @gui_lock_callback
     def __call__(self, sender, app_data, user_data):
         self.gui.action(self)
 
@@ -138,7 +132,6 @@ class SelectTrack(GuiAction):
             self.gui._active_clip = self.gui.state.get_obj(last_active_clip_id)
             SelectClip({"track":self.gui._active_track, "clip":self.gui._active_clip}).execute()
 
-        self.gui.update_clip_window()
 
 
 class SelectEmptyClipSlot(GuiAction):
@@ -150,14 +143,12 @@ class SelectEmptyClipSlot(GuiAction):
 
         self.gui._active_clip_slot = (new_track_i, new_clip_i)
         self.gui._active_track = self.state.tracks[new_track_i]
-        self.gui.update_clip_window()
 
     def undo(self):
         if self.old_clip_slot is None:
             return
         self.gui._active_clip_slot = self.old_clip_slot
         self.gui._active_track = self.state.tracks[self.old_clip_slot[0]]
-        self.gui.update_clip_window()
 
 
 class SelectClip(GuiAction):
@@ -172,7 +163,6 @@ class SelectClip(GuiAction):
 
         self.gui._active_track = track
         self.gui._active_clip = clip
-        self.gui.update_clip_window()
 
         for tag in self.gui.tags["hide_on_clip_selection"]:
             dpg.configure_item(tag, show=False)
@@ -182,7 +172,6 @@ class SelectClip(GuiAction):
         self.gui.save_last_active_clip()
         self.gui._active_track = self.last_track
         self.gui._active_clip = self.last_clip
-        self.gui.update_clip_window()
 
         for tag in self.gui.tags["hide_on_clip_selection"]:
             dpg.configure_item(tag, show=False)
@@ -323,7 +312,7 @@ class NewClip(GuiAction):
             with dpg.menu_bar(tag=menu_tag):
                 self.gui.add_node_menu(menu_tag, clip)
 
-                dpg.add_menu_item(label="Save Preset", callback=self.gui.show_presets_window, user_data=clip)
+                dpg.add_menu_item(label="New Preset", callback=self.gui.show_save_presets_window, user_data=clip)
 
                 tab_bar_tag =  f"{node_editor_tag}.tab_bar"
                 with dpg.tab_bar(tag=tab_bar_tag):
@@ -411,6 +400,7 @@ class Gui:
         self._inspecter_x = list(range(500))
 
         self._properties_buffer = defaultdict(dict)
+        self._global_presets_buffer = {}
 
         self._last_add_function_node = None
         self._custom_node_to_save = None
@@ -434,10 +424,14 @@ class Gui:
 
     def execute_wrapper(self, command):
         dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}] *")
-        return self.state.execute(command)
+        result = self.state.execute(command)
+        return result
 
     def action(self, action):
-        action.execute()
+        # Gui actions can modify state. Use the lock to make sure 
+        # the enture state is updated before the GUI tries to render.
+        with self.lock:
+            action.execute()
         self.past_actions.append(action)
 
     def action_callback(self, sender, app_data, user_data):
@@ -465,6 +459,7 @@ class Gui:
         thread.start()
         try:
             while dpg.is_dearpygui_running():
+                self.update_clip_window()
                 with self.lock:
                     self.update_state_from_gui()
                     self.update_gui_from_state()
@@ -545,8 +540,6 @@ class Gui:
 
                             if clip is not None:
                                 self.action(NewClip({"track_i":track_i, "clip_i":clip_i}))
-
-                self.update_clip_window()
 
         #### Mouse/Key Handlers ####
         logging.debug("Installing mouse/key handlers")
@@ -723,6 +716,11 @@ class Gui:
                     dpg.focus_item("performance_preset.gui.window")
                 dpg.add_menu_item(label="Performance Preset Window", callback=show_performance_presets_window)
 
+                def show_global_performance_presets_window():
+                    dpg.configure_item("global_performance_preset.gui.window", show=True)
+                    dpg.focus_item("global_performance_preset.gui.window")
+                dpg.add_menu_item(label="Global Performance Preset Window", callback=show_global_performance_presets_window)
+
                 def show_scripting_window():
                     dpg.configure_item("scripting.gui.window", show=True)
                     dpg.focus_item("scripting.gui.window")     
@@ -782,6 +780,7 @@ class Gui:
         self.create_io_window()
         self.create_scripting_window()
         self.create_performance_preset_window()
+        self.create_global_performance_preset_window()
         self.create_rename_window()
 
         logging.debug("Restoring GUI state.")
@@ -789,6 +788,7 @@ class Gui:
 
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        dpg.show_metrics()
 
     def open_menu_callback(self):
         dpg.configure_item("open_file_dialog", show=True)
@@ -812,19 +812,14 @@ class Gui:
     @gui_lock_callback
     def paste_clip_callback(self, sender, app_data, user_data):
         self.paste_clip(*user_data)
-        self.update_clip_window()
 
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
         result = self.execute_wrapper(f"play_clip {track.id} {clip.id}")
-        if result.success:
-            self.update_clip_window()
 
     def toggle_clip_play_callback(self, sender, app_data, user_data):
         track, clip = user_data
         result = self.execute_wrapper(f"toggle_clip {track.id} {clip.id}")
-        if result.success:
-            self.update_clip_window()
 
     def toggle_play_callback(self):
         self.state.toggle_play()
@@ -910,7 +905,7 @@ class Gui:
                 dpg.add_theme_color(tag=f"{menu_theme}.color", target=dpg.mvThemeCol_Text, value=[255, 255, 255, 255], category=dpg.mvThemeCat_Core)
         dpg.bind_item_theme(preset_menu_bar, menu_theme)
 
-    def show_presets_window(self, sender, app_data, user_data):
+    def show_save_presets_window(self, sender, app_data, user_data):
         clip = user_data
 
         window_tag = get_node_window_tag(clip)
@@ -964,6 +959,80 @@ class Gui:
                     with dpg.table_row():
                         dpg.add_text(default_value=channel.name)
                         dpg.add_checkbox(tag=f"preset.{i}")
+
+                with dpg.table_row():
+                    dpg.add_group()
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Save", callback=save)
+                        dpg.add_button(label="Cancel", callback=cancel)
+
+    def show_save_global_presets_window(self, sender, app_data, user_data):
+        save_global_preset_window_tag = "global_preset_window"
+        try:
+            dpg.delete_item(save_global_preset_window_tag)
+        except:
+            pass
+
+        def cancel(sender, app_data, user_data):
+            dpg.delete_item(save_global_preset_window_tag)
+
+        def save(sender, app_data, user_data):
+            global_presets = []
+            for i, track in enumerate(self.state.tracks):
+                include = dpg.get_value(f"global_preset.{i}")
+                if include:
+                    track, clip, preset = self._global_presets_buffer[i]
+                    global_presets.append(":".join([track.id, clip.id, preset.id]))
+            
+            if global_presets:
+                name = dpg.get_value("global_preset.name")
+                result = self.execute_wrapper(f"add_global_preset {','.join(global_presets)} {name}")
+                if result.success:
+                    dpg.configure_item(item=save_global_preset_window_tag, show=False)
+                    self.create_global_performance_preset_window()
+                    dpg.configure_item(item="global_performance_preset.gui.window", show=True)
+                    dpg.focus_item("global_performance_preset.gui.window")
+                    self._global_presets_buffer.clear()
+                else:
+                    logger.warning("Failed to add clip preset")
+
+        with dpg.window(tag=save_global_preset_window_tag, modal=True, width=500, height=500, no_move=True):
+            with dpg.table(header_row=False, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column()
+                dpg.add_table_column()
+                dpg.add_table_column()
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Global Preset Name")
+                    dpg.add_input_text(tag="global_preset.name")
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Track")
+                    dpg.add_text(default_value="Clip Preset")
+                    dpg.add_text(default_value="Include")
+
+                for i, track in enumerate(self.state.tracks):
+                    if all(clip is None for clip in track.clips):
+                        continue
+                    
+                    with dpg.table_row():
+
+                        dpg.add_text(default_value=track.name)
+                        
+                        def preset_selected(sender, app_data, user_data):
+                            i, title, track, clip, preset = user_data
+                            self._global_presets_buffer[int(i)] = (track, clip, preset) 
+                            dpg.configure_item(item=f"{save_global_preset_window_tag}.menu_bar.{i}.title", label=title)
+                        
+                        with dpg.menu(tag=f"{save_global_preset_window_tag}.menu_bar.{i}.title", label="Select Clip Preset"):
+                            for clip in track.clips:
+                                if not valid(clip):
+                                    continue
+                                for preset in clip.presets:
+                                    title = f"{clip.name}: {preset.name}"
+                                    dpg.add_menu_item(label=title, callback=preset_selected, user_data=(i, title, track, clip, preset))
+
+                        dpg.add_checkbox(tag=f"global_preset.{i}")
 
                 with dpg.table_row():
                     dpg.add_group()
@@ -2556,7 +2625,7 @@ class Gui:
             preset.execute()
 
         with dpg.window(
-            label=f"All Presets",
+            label=f"Clip Presets",
             width=800,
             height=800,
             pos=(100, 100),
@@ -2582,6 +2651,33 @@ class Gui:
                                         dpg.add_text(source=f"{clip.id}.name")
                                         for preset in clip.presets:
                                             dpg.add_button(label=preset.name, callback=play_clip_preset, user_data=(track, clip, preset))
+
+    def create_global_performance_preset_window(self):
+        try:
+            dpg.delete_item("global_performance_preset.gui.window")
+        except Exception as e:
+            pass
+
+        def play_global_clip_preset(sender, app_data, user_data):
+            global_preset = user_data
+            global_preset.execute()
+
+        with dpg.window(
+            label=f"Global Presets",
+            width=800,
+            height=800,
+            pos=(100, 100),
+            show=False,
+            tag="global_performance_preset.gui.window"
+        ) as window:
+            with dpg.menu_bar():
+                dpg.add_menu_item(label="New Global Preset", callback=self.show_save_global_presets_window)
+
+            with dpg.table(tag="global_performance_preset.table"):
+                dpg.add_table_column(label="Preset")
+                for global_preset in self.state.global_presets:
+                    with dpg.table_row():
+                        dpg.add_button(label=global_preset.name, callback=play_global_clip_preset, user_data=global_preset)
 
     def create_scripting_window(self):
         def run_script(sender):
@@ -3030,7 +3126,6 @@ class Gui:
         self.save_last_active_clip()
         self._active_track = self.state.tracks[track_i]
         self._active_clip = new_clip
-        self.update_clip_window()
 
     def get_all_valid_clip_input_channels(self):
         src_channels = []
@@ -3107,7 +3202,10 @@ class Gui:
                     tag = get_output_node_value_tag(c_active_clip, dst_channel)
                 else:
                     tag = f"{dst_channel.id}.value"
-                dpg.set_value(tag, dst_channel.get())
+                try:
+                    dpg.set_value(tag, dst_channel.get())
+                except:
+                    import pdb; pdb.set_trace()
 
             # This is only setting the GUI value, so we only need to update the active clip.
             for src_channel in self.get_all_valid_node_src_channels(c_active_clip):
@@ -3259,6 +3357,7 @@ class Gui:
                 if result.success:
                     self.reset_automation_plot(self._active_input_channel)
 
+    @gui_lock_callback
     def key_press_callback(self, sender, app_data, user_data):
         key_n = app_data
         key = chr(key_n)

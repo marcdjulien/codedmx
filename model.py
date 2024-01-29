@@ -306,6 +306,9 @@ class AutomatableSourceNode(SourceNode):
         self.last_beat = 0
 
     def update(self, clip_beat):
+        if self.active_automation is None:
+            return
+
         beat = (clip_beat * (2**self.speed))
         current_beat = beat % self.active_automation.length
         restarted = current_beat < self.last_beat
@@ -688,7 +691,7 @@ class FunctionCustomNode(FunctionNode):
         try:
             exec(code)
         except BaseException as e:
-            print(F"Error: {e}")
+            print(f"Error in {self.name}({self.type}): {e}")
             return
 
         for output_i, output_channel in enumerate(self.outputs):
@@ -948,6 +951,9 @@ class FunctionGlobalReceiver(FunctionNode):
         self.add_parameter(self.var_parameter)
         self.type = "global_receiver"
 
+        # Call this on init to initialize the `global_vars`.
+        self.transform()
+
     def transform(self):
         _STATE.global_vars[self.var_parameter.value] = self.inputs[0].get()
 
@@ -970,7 +976,7 @@ class FunctionGlobalSender(FunctionNode):
         self.type = "global_sender"
 
     def transform(self):
-        self.outputs[0].set(_STATE.global_vars.get(self.var_parameter.value, 0))
+        self.outputs[0].set(_STATE.global_vars.get(self.var_parameter.value, self.outputs[0].get()))
 
     def update_parameter(self, index, value):
         if self.parameters[index] == self.var_parameter:
@@ -1696,6 +1702,35 @@ class ClipPreset(Identifier):
             self.presets.append((UUID_DATABASE[channel_id], UUID_DATABASE[automation_id]))
         self.speeds = data["speeds"]
 
+
+class GlobalClipPreset(Identifier):
+    def __init__(self, name=None, clip_presets=None):
+        super().__init__()
+        self.name = name
+        self.global_presets = clip_presets or []
+
+    def execute(self):
+        for clip_preset in self.global_presets:
+            track, clip, preset = clip_preset
+            _STATE.execute(f"play_clip {track.id} {clip.id}")
+            preset.execute()
+ 
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "global_presets": [f"{track.id}:{clip.id}:{preset.id}" for track, clip, preset in self.global_presets],
+        })
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        for global_preset_ids in data["global_presets"]:
+            track_id, clip_id, preset_id = global_preset_ids.split(":")
+            self.global_presets.append((UUID_DATABASE[track_id], UUID_DATABASE[clip_id], UUID_DATABASE[preset_id]))
+
+
 class Clip(Identifier):
     def __init__(self, outputs=[]):
         super().__init__()
@@ -2210,11 +2245,6 @@ def global_unmap_midi(obj):
 
 
 class ProgramState(Identifier):
-    _attrs_to_dump = [
-        "project_name",
-        "project_filepath",
-        "tempo",
-    ]
     
     def __init__(self):
         global _STATE
@@ -2238,6 +2268,8 @@ class ProgramState(Identifier):
         self.play_time_start_s = 0
         self.time_since_start_beat = 0
         self.time_since_start_s = 0
+
+        self.global_presets = []
 
     def toggle_play(self):
         if self.playing:
@@ -2272,6 +2304,7 @@ class ProgramState(Identifier):
             "tracks": [track.serialize() for track in self.tracks],
             "io_inputs": [None if device is None else device.serialize() for device in self.io_inputs],
             "io_outputs": [None if device is None else device.serialize() for device in self.io_outputs],
+            "global_presets": [global_preset.serialize() for global_preset in self.global_presets],
         }
 
         return data
@@ -2303,6 +2336,11 @@ class ProgramState(Identifier):
             self.io_outputs[i] = device
             if isinstance(device, MidiOutputDevice):
                 MIDI_OUTPUT_DEVICES[device.device_name] = device
+
+        for global_preset_data in data.get("global_presets", []):
+            global_preset = GlobalClipPreset()
+            global_preset.deserialize(global_preset_data)
+            self.global_presets.append(global_preset)
 
     def duplicate_obj(self, obj):
         data = obj.serialize()
@@ -2475,6 +2513,22 @@ class ProgramState(Identifier):
                 presets.append((self.get_obj(channel_id), self.get_obj(automation_id)))
             preset = clip.add_preset(preset_name, presets)
             return Result(True, preset)
+
+        elif cmd == "add_global_preset":
+            all_global_preset_ids = toks[1].split(",")
+            global_preset_name = " ".join(toks[2:])
+
+            clip_presets = []
+            for global_preset_id in all_global_preset_ids:
+                track_id, clip_id, preset_id = global_preset_id.split(":")
+                track = self.get_obj(track_id)
+                clip = self.get_obj(clip_id)
+                preset = self.get_obj(preset_id)
+                clip_presets.append((track, clip, preset))
+
+            global_preset = GlobalClipPreset(global_preset_name, clip_presets=clip_presets)
+            self.global_presets.append(global_preset)
+            return Result(True, global_preset)
 
         elif cmd == "add_automation_point":
             automation_id = toks[1]
