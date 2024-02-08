@@ -15,6 +15,11 @@ import threading
 import mido
 import json
 import logging
+import tempfile
+import os
+from pathlib import Path
+import traceback
+from inspect import stack
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +43,8 @@ TYPES = ["bool", "int", "float", "any"]
 UUID_DATABASE = {}
 
 ID_COUNT = 0
+
+GLOBAL_CODE_ID = "functions"
 
 def update_name(name, other_names):
     def toks(obj_name):
@@ -129,29 +136,30 @@ cast = {
 class Channel(Identifier):
     def __init__(self, **kwargs):
         super().__init__()
-        self.value = kwargs.get("value")
+        self._value = kwargs.get("value")
         self.size = kwargs.get("size", 1)
 
-        if self.value is None:
-            self.value = 0 if self.size == 1 else [0]*self.size
+        if self._value is None:
+            self._value = 0 if self.size == 1 else [0]*self.size
 
         self.direction = kwargs.get("direction", "in")
         self.dtype = kwargs.get("dtype", "float")
-        self.name = kwargs.get("name", "Channel")
+        # TODO: Replace with regex.sub and include special chars
+        self.name = kwargs.get("name", "Channel").replace(" ", "")
 
     def get(self):
         try:
-            return cast[self.dtype](self.value)
+            return cast[self.dtype](self._value)
         except:
             return 0
 
     def set(self, value):
-        self.value = value
+        self._value = value
 
     def serialize(self):
         data = super().serialize()
         data.update({
-            "value": self.value,
+            "value": self._value,
             "size": self.size,
             "direction": self.direction,
             "dtype": self.dtype,
@@ -166,6 +174,14 @@ class Channel(Identifier):
         self.dtype = data["dtype"]
         self.name = data["name"]
         self.size = data["size"]
+
+    @property
+    def value(self):
+        return self.get()
+
+    @value.setter
+    def value(self, value):
+        self.set(value)
 
 
 class Parameter(Identifier):
@@ -236,7 +252,7 @@ class Parameterized(Identifier):
 class SourceNode(Parameterized):
     def __init__(self, **kwargs):
         super().__init__()
-        kwargs.setdefault("direction", "out")
+        kwargs.setdefault("direction", "Out")
         self.name = kwargs.get("name", "")
         self.channel = Channel(**kwargs)
         self.input_type = None
@@ -410,7 +426,7 @@ class AutomatableSourceNode(SourceNode):
 
 class DmxOutput(Channel):
     def __init__(self, dmx_address=1, name=""):
-        super().__init__(direction="in", dtype="int", name=name or f"DMX CH. {dmx_address}")
+        super().__init__(direction="in", dtype="int", name=name or f"Dmx{dmx_address}")
         self.dmx_address = dmx_address
         self.history = [0] * 500
 
@@ -443,16 +459,22 @@ class DmxOutputGroup(Identifier):
             self.outputs.append(output_channel)
         self.update_starting_address(dmx_address)
         self.update_name(name)
+        self.map = {
+            self.channel_names[i]:self.outputs[i] 
+            for i in range(len(self.outputs))
+        }
 
     def record(self):
         for output in self.outputs:
             output.record()
 
     def update_starting_address(self, address):
+        self.dmx_address = address
         for i, output_channel in enumerate(self.outputs):
             output_channel.dmx_address = i + address
 
     def update_name(self, name):
+        self.name = name
         for i, output_channel in enumerate(self.outputs):
             output_channel.name = f"{name}.{self.channel_names[i]}"
 
@@ -477,6 +499,11 @@ class DmxOutputGroup(Identifier):
         for i, output_data in enumerate(data["outputs"]):
             self.outputs[i].deserialize(output_data)
 
+    def __getattr__(self, name):
+        return self.map[name]
+
+    def __getitem__(self, name):
+        return self.map[name]
 
 class ColorNode(SourceNode):
     nice_title = "Color"
@@ -575,216 +602,41 @@ class MidiInput(AutomatableSourceNode):
             return super().update_parameter(index, value)
 
 
-class ChannelLink(Identifier):
-    def __init__(self, src_channel=None, dst_channel=None):
-        super().__init__()
-        self.src_channel = src_channel
-        self.dst_channel = dst_channel
+class FunctionFactory:
+    def __init__(self):
+        self._functions = {}
 
-    def update(self):
-        self.dst_channel.set(self.src_channel.get())
-
-    def contains(self, channel):
-        return self.src_channel == channel or self.dst_channel == channel
-
-    def serialize(self):
-        data = super().serialize()
-        data.update({
-            "src_channel": self.src_channel.id,
-            "dst_channel": self.dst_channel.id,
-        })
-        return data
-
-    def deserialize(self, data):
-        super().deserialize(data)
-        self.src_channel = UUID_DATABASE[data["src_channel"]]
-        self.dst_channel = UUID_DATABASE[data["dst_channel"]]
+    def get(self, cls):
+        id_hash = hash(stack()[2].positions)
+        if id_hash not in self._functions:
+            self._functions[id_hash] = cls()
+        return self._functions[id_hash]
 
 
-class FunctionNode(Parameterized):
+class CodeStorage:
+    def __init__(self):
+        self._vars = defaultdict(dict)
 
-    def __init__(self, args="", name=""):
-        super().__init__()
-        self.name = name
-        self.inputs: Channel = []
-        self.outputs: Channel = []
-        self.args = args
-        self.type = None
+    def get(self, name, default=None):
+        id_ = stack()[1].filename
+        return self._vars[id_].get(name, default)
 
-    def transform(self):
-        raise NotImplemented
-
-    def outputs(self):
-        return self.outputs
-
-    def serialize(self):
-        data = super().serialize()
-        data.update({
-            "name": self.name,
-            "type": self.type,
-            "args": self.args,
-            "inputs": [channel.serialize() for channel in self.inputs],
-            "outputs": [channel.serialize() for channel in self.outputs],
-        })
-
-        return data
-
-    def deserialize(self, data):
-        super().deserialize(data)
-
-        self.name = data["name"]
-        self.type = data["type"]
-        self.args = data["args"]
-
-        # Some nodes create their inputs/outputs dynamically
-        # Ensure the size is correct before deerializing.
-        self.inputs = [None] * len(data["inputs"])
-        self.outputs = [None] * len(data["outputs"])
-        for i, input_data in enumerate(data["inputs"]):
-            channel = Channel()
-            channel.deserialize(input_data)
-            self.inputs[i] = channel
-        for i, output_data in enumerate(data["outputs"]):
-            channel = Channel()
-            channel.deserialize(output_data)
-            self.outputs[i] = channel
+    def set(self, name, value):
+        id_ = stack()[1].filename
+        self._vars[id_][name] = value
 
 
-class FunctionCustomNode(FunctionNode):
-    nice_title = "Custom"
+class GlobalCodeStorage:
+    def __init__(self):
+        self._vars = dict()
 
-    def __init__(self, args="", name="Custom"):
-        super().__init__(args, name)
-        self.name = name
-        self.n_in_parameter = Parameter("n_inputs", 0)
-        self.n_out_parameter = Parameter("n_outputs", 0)
-        self.code_parameter = Parameter("code", "")
-        self.add_parameter(self.n_in_parameter)
-        self.add_parameter(self.n_out_parameter)
-        self.add_parameter(self.code_parameter)
-        self.inputs: Channel = []
-        self.outputs: Channel = []
-        self.type = "custom"
-        self._vars = defaultdict(float)
+    def get(self, name):
+        return self._vars[name]
 
-        arg_v = args.split(",", 2)
-        if len(arg_v) == 3:
-            n_inputs = int(arg_v[0])
-            n_outputs = int(arg_v[1])
-            code = arg_v[2]
-            self.update_parameter(0, n_inputs)
-            self.update_parameter(1, n_outputs)
-            self.update_parameter(2, code)
+    def set(self, name, value):
+        self._vars[name] = value
 
-    def transform(self):
-        code = self.parameters[2].value
-        if code is None:
-            return
-
-        code = code.replace("[NEWLINE]", "\n")
-
-        i = dict()
-        o = dict()
-        v = self._vars
-        for input_i, input_channel in enumerate(self.inputs):
-            i[input_i] = input_channel.get()
-        try:
-            exec(code)
-        except BaseException as e:
-            print(f"Error in {self.name}({self.type}): {e}")
-            return
-
-        for output_i, output_channel in enumerate(self.outputs):
-            output_channel.set(o.get(output_i, 0))
-
-    def outputs(self):
-        return self.outputs
-
-    def update_parameter(self, index, value):
-        channels = []
-        if self.parameters[index] == self.n_in_parameter:
-            n = int(value)
-            if n < 0:
-                return False
-
-            delta = n - len(self.inputs)
-            if n < len(self.inputs):
-                for i in range(n, len(self.inputs)):
-                    channels.append(self.inputs.pop(-1))
-            elif n > len(self.inputs):
-                for _ in range(delta):
-                    i = len(self.inputs)
-                    new_channel = Channel(direction="in", dtype="any", name=f"i[{i}]")
-                    self.inputs.append(new_channel)
-                    channels.append(new_channel)
-            self.parameters[0].value = value
-            return True, (delta, channels)
-        elif self.parameters[index] == self.n_out_parameter:
-            n = int(value)
-            if n < 0:
-                return False
-                
-            delta = n - len(self.outputs)
-            if n < len(self.outputs):
-                for i in range(n, len(self.outputs)):
-                    channels.append(self.outputs.pop(-1))
-            elif n > len(self.outputs):
-                for _ in range(delta):
-                    i = len(self.outputs)
-                    new_channel = Channel(direction="out", dtype="any", name=f"o[{i}]")
-                    self.outputs.append(new_channel)
-                    channels.append(new_channel)
-            self.parameters[1].value = value
-            return True, (delta, channels)
-        elif self.parameters[index] == self.code_parameter:
-            self.parameters[2].value = value.replace("\n", "[NEWLINE]")
-            return True
-        else:
-            return super().update_parameter(index, value)
-
-
-class FunctionBinaryOperator(FunctionNode):
-    nice_title = "Binary Operator"
-
-    def __init__(self, args="", name="Operator"):
-        super().__init__(args, name)
-        self.op_parameter = Parameter("op")
-        self.add_parameter(self.op_parameter)
-        self.inputs = [
-            Channel(direction="in", value=0, name=f"x"), 
-            Channel(direction="in", value=0, name=f"y"), 
-        ]
-        self.outputs = [
-            Channel(direction="out", value=0, name=f"z")
-        ]
-        self.type = "binary_operator"
-        self.f = None
-
-    def transform(self):
-        # TODO: Handle division by zero
-        if self.f is not None:
-            if self.parameters[0].value == "/" and self.inputs[1].get() == 0:
-                return
-            self.outputs[0].set(self.f(self.inputs[0].get(), self.inputs[1].get()))
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.op_parameter and value in ["+", "-", "/", "*", "%", "=="]:
-            self.parameters[index].value = value
-
-            # TODO: Add other operators
-            self.f = {
-                "+": operator.add,
-                "-": operator.sub,
-                "/": operator.truediv,
-                "*": operator.mul,
-                "%": operator.mod,
-                "==": operator.eq,
-            }[value]
-            return True
-        else:
-            return super().update_parameter(index, value)
-
-
+"""
 class FunctionSequencer(FunctionNode):
     nice_title = "Sequencer"
 
@@ -837,221 +689,62 @@ class FunctionSequencer(FunctionNode):
             return True
         else:
             return super().update_parameter(index, value)
+"""
 
-class FunctionScale(FunctionNode):
-    nice_title = "Scale"
-
-    def __init__(self, args="", name="Scale"):
-        super().__init__(name)
-        self.in_min_parameter = Parameter("in.min", 0)
-        self.in_max_parameter = Parameter("in.max", 255)
-        self.out_min_parameter = Parameter("out.min", 0)
-        self.out_max_parameter = Parameter("out.max", 1)
-        self.add_parameter(self.in_min_parameter)
-        self.add_parameter(self.in_max_parameter)
-        self.add_parameter(self.out_min_parameter)
-        self.add_parameter(self.out_max_parameter)
-        self.inputs = [
-            Channel(direction="in", value=0, name=f"x"), 
-        ]
-        self.outputs = [
-            Channel(direction="out", value=0, name=f"y")
-        ]
-        self.type = "scale"
-
-    def transform(self):
-        in_min = self.in_min_parameter.value
-        in_max = self.in_max_parameter.value
-        out_min = self.out_min_parameter.value
-        out_max = self.out_max_parameter.value
-        x = self.inputs[0].get()
-        y = (((x - in_min)/(in_max - in_min))*(out_max-out_min)) + out_min
-        self.outputs[0].set(y)
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] in [self.in_min_parameter, self.in_max_parameter, self.out_min_parameter, self.out_max_parameter]:
-            self.parameters[index].value = float(value)
-            return True
-        else:
-            return super().update_parameter(index, value)
+def Scale(x, in_min, in_max, out_min, out_max):
+    return (((x - in_min)/(in_max - in_min))*(out_max-out_min)) + out_min
 
 
-class FunctionDemux(FunctionNode):
-    nice_title = "Demux"
+def Demux(select, value, outputs):
+    n = len(outputs)
+    if isinstance(value, list):
+        reset_value = [0] * len(value)
+    else:
+        reset_value = 0
 
-    def __init__(self, args="0", name="Demux"):
-        super().__init__(args, name)
-        self.n = int(args)
-        self.inputs = [
-            Channel(direction="in", value=0, dtype="int", name=f"sel"),
-            Channel(direction="in", dtype="any", name=f"val")
-        ]
-        for i in range(self.n):
-            self.outputs.append(Channel(direction="out", dtype="any", name=f"{i+1}"))
+    for output in outputs:
+        output.value = reset_value
 
-        self.type = "demux"
-
-    def transform(self):
-        value = self.inputs[1].get()
-        if isinstance(value, list):
-            reset_value = [0] * len(value)
-        else:
-            reset_value = 0
-
-        for output in self.outputs:
-            output.set(reset_value)
-
-        selected = int(self.inputs[0].get())
-        if selected in range(self.n+1):
-            if selected != 0:
-                self.outputs[selected-1].set(value)
+    select = int(select)
+    if select in range(n+1):
+        if select != 0:
+            outputs[select-1].value = value
 
 
-class FunctionMultiplexer(FunctionNode):
-    nice_title = "Multiplexer"
-
-    def __init__(self, args="0", name="Multiplexer"):
-        super().__init__(args, name)
-        self.n = int(args)
-        self.inputs = [
-            Channel(direction="in", value=1, dtype="int", name=f"sel")
-        ]
-        for i in range(self.n):
-            self.inputs.append(Channel(direction="in", dtype="any", name=f"{i+1}"))
-
-        self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
-        self.type = "multiplexer"
-
-    def transform(self):
-        selected = int(self.inputs[0].get())
-        if selected in range(1, self.n+1):
-            self.outputs[0].set(self.inputs[selected].get())
+def Multiplexer(selected, inputs, output):
+    if selected in range(1, self.n+1):
+        output.value = inputs[selected].value
 
 
-class FunctionPassthrough(FunctionNode):
-    nice_title = "Passthrough"
 
-    def __init__(self, args="", name="Passthrough"):
-        super().__init__(args, name)
-        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
-        self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
-        self.type = "passthrough"
-
-    def transform(self):
-        self.outputs[0].set(self.inputs[0].get())
-
-
-class FunctionGlobalReceiver(FunctionNode):
-    nice_title = "Global Receiver"
-
-    def __init__(self, args="", name="Global Receiver"):
-        super().__init__(args, name)
-        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
-        self.var_parameter = Parameter("var", "name")
-        self.add_parameter(self.var_parameter)
-        self.type = "global_receiver"
-
-        # Call this on init to initialize the `global_vars`.
-        self.transform()
-
-    def transform(self):
-        _STATE.global_vars[self.var_parameter.value] = self.inputs[0].get()
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.var_parameter:
-            self.parameters[index].value = value
-            return True
-        else:
-            return super().update_parameter(index, value)
-
-
-class FunctionGlobalSender(FunctionNode):
-    nice_title = "Global Sender"
-
-    def __init__(self, args="", name="Global Sender"):
-        super().__init__(args, name)
-        self.outputs.append(Channel(direction="out", dtype="any", name=f"out"))
-        self.var_parameter = Parameter("var", "name")
-        self.add_parameter(self.var_parameter)
-        self.type = "global_sender"
-
-    def transform(self):
-        self.outputs[0].set(_STATE.global_vars.get(self.var_parameter.value, self.outputs[0].get()))
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.var_parameter:
-            self.parameters[index].value = value
-            return True
-        else:
-            return super().update_parameter(index, value)
-
-
-class FunctionTimeSeconds(FunctionNode):
-    nice_title = "Seconds"
-
-    def __init__(self, args="", name="Seconds"):
-        super().__init__(args, name)
-        self.outputs.append(Channel(direction="out", dtype="float", name="s"))
-        self.type = "time_s"
-
-    def transform(self):
-        global _STATE
-        self.outputs[0].set(_STATE.time_since_start_s)
-
-
-class FunctionTimeBeats(FunctionNode):
-    nice_title = "Beats"
-
-    def __init__(self, args="", name="Beats"):
-        super().__init__(args, name)
-        self.outputs.append(Channel(direction="out", dtype="float", name="beat"))
-        self.type = "time_beat"
-
-    def transform(self):
-        global _STATE
-        self.outputs[0].set(_STATE.time_since_start_beat + 1)
-
-
-class FunctionChanging(FunctionNode):
-    nice_title = "Changing"
-
-    def __init__(self, args="", name="Changing"):
-        super().__init__(args, name)
-        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
-        self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
-        self.type = "changing"
+class FunctionChanging:
+    def __init__(self):
         self._last_value = None
 
-    def transform(self):
+    def transform(self, new_value):
         changing = False
-        new_value = self.inputs[0].get()
         if isinstance(new_value, (list)):
             changing = tuple(new_value) == self._last_value
             self._last_value = tuple(new_value)
         else:
             changing = self._last_value != new_value
             self._last_value = new_value
+        return changing
 
-        self.outputs[0].set(int(changing))
+
+def Changing(value):
+    obj = FUNCTION_FACTORY.get(FunctionChanging)
+    return obj.transform(value)
 
 
-class FunctionToggleOnChange(FunctionNode):
-    nice_title = "Toggle On Change"
+class FunctionToggleOnChange:
 
     def __init__(self, args="", name="ToggleOnChange"):
-        super().__init__(args, name)
-        self.rising_only_parameter = Parameter("Rising", False, dtype="bool")
-        self.add_parameter(self.rising_only_parameter)
-        self.inputs.append(Channel(direction="in", dtype="any", name=f"in"))
-        self.outputs.append(Channel(direction="out", dtype="bool", name=f"out"))
-        self.type = "toggle_on_change"
         self._last_value = None
         self._toggle_value = 0
 
-    def transform(self):
+    def transform(self, new_value, rising_only):
         changing = False
-        rising_only = self.rising_only_parameter.value
-        new_value = self.inputs[0].get()
         if isinstance(new_value, (list)):
             changing = tuple(new_value) == self._last_value
             self._last_value = tuple(new_value)
@@ -1063,34 +756,29 @@ class FunctionToggleOnChange(FunctionNode):
 
         if changing:
             self._toggle_value = int(not self._toggle_value)
-        self.outputs[0].set(self._toggle_value)
+
+        return self._toggle_value
         
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.rising_only_parameter:
-            self.parameters[index].value = value.lower() == "true"
-            return True
-        else:
-            return super().update_parameter(index, value)
+
+def ToggleOnChange(value, rising_only=False):
+    obj = FUNCTION_FACTORY.get(FunctionToggleOnChange)
+    return obj.transform(value)
 
 
-class FunctionLastChanged(FunctionNode):
-    nice_title = "Last Changed"
-
+class FunctionLastChanged:
     def __init__(self, args="0", name="LastChanged"):
         super().__init__(args, name)
-        self.n = int(args)
-        for i in range(self.n):
-            self.inputs.append(Channel(direction="in", value=0, dtype="any", name=f"{i+1}"))
-
-        self.outputs.append(Channel(direction="out", dtype="int", name=f"out{self.n}"))
-        self.type = "last_changed"
-        self._last_values = [None] * self.n
+        self._last_values = []
         self._last_changed_index = 0
 
-    def transform(self):
+    def transform(self, new_values):
+        if len(self._last_values) != len(new_values):
+            self._last_values = new_values
+            return 0
+
         for i, last_value in enumerate(self._last_values):
             changing = False
-            new_value = self.inputs[i].get()
+            new_value = new_values[i].value
             if isinstance(new_value, (list)):
                 changing = tuple(new_value) == last_value
                 self._last_values[i] = tuple(new_value)
@@ -1101,173 +789,109 @@ class FunctionLastChanged(FunctionNode):
             if changing:
                 self._last_changed_index = i
 
-        self.outputs[0].set(self._last_changed_index)
+        return self._last_changed_index
 
 
-class FunctionAggregator(FunctionNode):
-    nice_title = "Aggregator"
-
-    def __init__(self, args="0", name="Aggregator"):
-        super().__init__(args, name)
-        self.n = int(args)
-        for i in range(self.n):
-            self.inputs.append(Channel(direction="in", value=0, dtype="any", name=f"{i+1}"))
-
-        self.outputs.append(Channel(direction="out", dtype="any", size=self.n, name=f"out{self.n}"))
-        self.type = "aggregator"
-
-    def transform(self):
-        value = [channel.get() for channel in self.inputs]
-        self.outputs[0].set(value)
+def LastChanged(values, rising_only=False):
+    obj = FUNCTION_FACTORY.get(FunctionLastChanged)
+    return obj.transform(values)
 
 
-class FunctionSeparator(FunctionNode):
-    nice_title = "Separator"
+def Random(a, b):
+    if a > b:
+        return b
+    return random.randint(a, b)
 
-    def __init__(self, args="0", name="Separator"):
-        super().__init__(args, name)
-        self.n = int(args)
-        self.inputs.append(Channel(direction="in", dtype="any", size=self.n, name=f"in{self.n}"))
-
-        for i in range(self.n):
-            self.outputs.append(Channel(direction="out", dtype="any", name=f"out{self.n}"))
-        self.type = "separator"
-
-    def transform(self):
-        values = self.inputs[0].get()
-        for i, value in enumerate(values):
-            if i < len(self.outputs):
-                self.outputs[i].set(value)
-
-
-class FunctionRandom(FunctionNode):
-    nice_title = "Random"
-
-    def __init__(self, args="", name="Random"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", value=0, dtype="int", name=f"a"),
-            Channel(direction="in", value=1, dtype="int", name=f"b")
-        ]
-        self.outputs.append(
-            Channel(direction="out", value=0, name=f"z")
-        )
-        self.type = "random"
-
-    def transform(self):
-        a = int(self.inputs[0].get())
-        b = int(self.inputs[1].get())
-        if a > b:
-            return
-        self.outputs[0].set(random.randint(a, b))
-
-
-class FunctionSample(FunctionNode):
-    nice_title = "Sample"
-
-    def __init__(self, args="", name="Sample"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", value=1, name=f"rate", dtype="float"),
-            Channel(direction="in", value=0, name=f"in", dtype="float")
-        ]
-        self.outputs.append(
-            Channel(direction="out", value=0, name=f"out", dtype="float")
-        )
-        self.type = "sample"
-
+class FunctionRateLimit:
+    def __init__(self):
         self._last_sample_time = 0
 
-    def transform(self):
-
-        rate = self.inputs[0].get()
-        if rate <= 0:
-            return
-        if (time.time() - self._last_sample_time) < rate:
-            return
-        else:
+    def transform(self, period, function, args):
+        if period <= 0 or (time.time() - self._last_sample_time) >= period:
             self._last_sample_time = time.time()
-            self.outputs[0].set(self.inputs[1].get())
+            return function(*args)
 
 
-class FunctionSampleTrigger(FunctionNode):
-    nice_title = "Sample Trigger"
+def RateLimit(period, function, args=()):
+    obj = FUNCTION_FACTORY.get(FunctionRateLimit)
+    return obj.transform(period, function, args)
 
-    def __init__(self, args="", name="Sample Trigger"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", value=1, name=f"trigger", dtype="bool"),
-            Channel(direction="in", value=0, name=f"in", dtype="float")
-        ]
-        self.outputs.append(
-            Channel(direction="out", value=0, name=f"out", dtype="float")
-        )
-        self.type = "sample_trigger"
+
+class FunctionSample:
+    def __init__(self):
+        self._last_sample_time = 0
         self._last_value = 0
 
-    def transform(self):
-        trigger = self.inputs[0].get()
-        if trigger != self._last_value and trigger:
-            self.outputs[0].set(self.inputs[1].get())
-        self._last_value = trigger
-
-
-class FunctionTransition(FunctionNode):
-    nice_title = "Transition"
-
-    def __init__(self, args="", name="Transition"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", dtype="any", name=f"a"),
-            Channel(direction="in", dtype="any", name=f"b"),
-            Channel(direction="in", dtype="float", name=f"mix"),
-        ]
-        self.outputs.append(
-            Channel(direction="out", dtype="any", name=f"z")
-        )
-        self.type = "transition"
-
-    def transform(self):
-        a = self.inputs[1].get()
-        b = self.inputs[0].get()
-        mix = clamp(self.inputs[2].get(), 0.0, 1.0)
-
-        result = None
-        if isinstance(a, (float, int)) and isinstance(b, (float, int)):
-            result = (a * mix) + (b * (1.0 - mix))
+    def transform(self, rate, cur_value):
+        if rate <= 0:
+            return cur_value
+        if (time.time() - self._last_sample_time) < rate:
+            return self._last_value
         else:
-            result = []
-            for i, x in enumerate(a):
-                r = (x * mix) + (b[i] * (1.0 - mix))
-                result.append(r)
-
-        self.outputs[0].set(result)
+            self._last_value = cur_value
+            self._last_sample_time = time.time()
+            return self._last_value
 
 
-class FunctionDelay(FunctionNode):
-    nice_title = "Delay"
+def Sample(rate, cur_value):
+    obj = FUNCTION_FACTORY.get(FunctionSample)
+    return obj.transform(rate, cur_value)
 
-    def __init__(self, args="", name="Delay"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", name=f"time", dtype="float"),
-            Channel(direction="in", name=f"in", dtype="any")
-        ]
-        self.outputs = [
-            Channel(direction="out", name=f"out", dtype="any")
-        ]
-        self.type = "delay"
 
+class FunctionSampleTrigger:
+    def __init__(self):
+        self._last_trigger = 0
+        self._last_value = 0
+
+    def transform(self, trigger, cur_value):
+        if trigger != self._last_trigger and trigger:
+            self._last_value = cur_value
+        self._last_trigger = trigger
+        return self._last_value
+
+
+def SampleTrigger(trigger, cur_value):
+    obj = FUNCTION_FACTORY.get(FunctionSampleTrigger)
+    return obj.transform(trigger, cur_value)
+
+
+def Mix(a, b, amount):
+    mix = clamp(amount, 0.0, 1.0)
+
+    result = None
+    if isinstance(a, (float, int)) and isinstance(b, (float, int)):
+        result = (a * mix) + (b * (1.0 - mix))
+    else:
+        result = []
+        for i, x in enumerate(a):
+            r = (x * mix) + (b[i] * (1.0 - mix))
+            result.append(r)
+
+    return result
+
+
+class FunctionDelay:
+    def __init__(self):
+        self._delay = 0
         self._buffer = []
+        self._last_time = 0
+        self._last_value = 0
 
-    def transform(self):
+    def get_n(self):
+        return int(self._delay * 60 )
+
+    def transform(self, cur_value, delay):
+        self._delay = delay
+
+        if (time.time() - self._last_time) < (1/60.):
+            # Don't update.
+            return self._last_value
+
         n = self.get_n()
-        cur_value = self.inputs[1].get()
         n_buf = len(self._buffer)
         
         if n <= 0:
-            self.outputs[0].set(cur_value)
-            return
+            return cur_value
         elif n_buf != n:
             if isinstance(cur_value, list):
                 reset_value = [0] * len(cur_value)
@@ -1280,10 +904,34 @@ class FunctionDelay(FunctionNode):
                 self._buffer = self._buffer[0:n]
 
         self._buffer.insert(0, cur_value)
-        self.outputs[0].set(self._buffer.pop())
+        self._last_value = self._buffer.pop()
+        self._last_time = time.time()
+        return self._last_value
 
-    def get_n(self):
-        return int(self.inputs[0].get()*60)
+
+def Delay(value, delay):
+    obj = FUNCTION_FACTORY.get(FunctionDelay)
+    return obj.transform(delay, value)
+
+
+class FunctionDecay:
+    def __init__(self):
+        self.value = 0
+
+    def transform(self, value, decay_amount):
+        if value >= self.value:
+            self.value = value
+        else:
+            self.value *= decay_amount
+
+        if self.value <= 0:
+            self.value = 0
+
+        return self.value
+
+def Decay(value, decay_amount):
+    obj = FUNCTION_FACTORY.get(FunctionDecay)
+    return obj.transform(value, decay_amount)
 
 
 class FunctionDelayBeats(FunctionDelay):
@@ -1308,204 +956,12 @@ class FunctionDelayBeats(FunctionDelay):
         return int(time_s * 60)
 
 
-class FunctionCanvas1x8(FunctionNode):
-    nice_title = "Canvas 1x8"
+def NormMult(values, factor):
+    result = 1.0
+    for value in values:
+        result *= float(value)/factor
+    return result*factor
 
-    def __init__(self, args="", name="Canvas1x8"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", value=0, name="start", dtype="int"),
-            Channel(direction="in", value=0, name="size", dtype="int"),
-            Channel(direction="in", value=0, name="r", dtype="int"),
-            Channel(direction="in", value=0, name="g", dtype="int"),
-            Channel(direction="in", value=0, name="b", dtype="int"),
-            Channel(direction="in", value=0, name="clear", dtype="bool"),
-        ]
-        self.outputs.extend([
-            Channel(direction="out", value=0, name=f"{rgb}{n}", dtype="float")
-            for n in range(8)
-            for rgb in "rgb"
-        ])
-        self.type = "canvas1x8"
-
-    def transform(self):
-        start = self.inputs[0].get()
-        size = self.inputs[1].get()
-        r = self.inputs[2].get()
-        g = self.inputs[3].get()
-        b = self.inputs[4].get()
-        clear = self.inputs[5].get()
-        color = [r, g, b]        
-        if clear:
-            for output_channel in self.outputs:
-                output_channel.set(0)
-
-        if 0 <= start < 8 and 0 <= start+size <= 8:
-            for i in range(start, start+size):
-                for j in range(3):
-                    self.outputs[(i*3) + (j)].set(color[j])
-
-class FunctionPixelMover1(FunctionNode):
-    nice_title = "Pixel Mover"
-
-    def __init__(self, args="", name="PixelMover1"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", value=0, name="i1", dtype="int"),
-            Channel(direction="in", value=0, name="r1", dtype="int"),
-            Channel(direction="in", value=0, name="g1", dtype="int"),
-            Channel(direction="in", value=0, name="b1", dtype="int"),
-            Channel(direction="in", value=0, name="i2", dtype="int"),
-            Channel(direction="in", value=0, name="r2", dtype="int"),
-            Channel(direction="in", value=0, name="g2", dtype="int"),
-            Channel(direction="in", value=0, name="b2", dtype="int"),
-        ]
-        self.outputs.extend([
-            Channel(direction="out", value=0, name=f"{rgb}{n}", dtype="float")
-            for n in range(8)
-            for rgb in "rgb"
-        ])
-        self.type = "pixelmover1"
-
-        self._canvas = [0] * 24
-
-    def transform(self):
-        i1 = self.inputs[0].get()
-        r1 = self.inputs[1].get()
-        g1 = self.inputs[2].get()
-        b1 = self.inputs[3].get()
-        i2 = self.inputs[4].get()
-        r2 = self.inputs[5].get()
-        g2 = self.inputs[6].get()
-        b2 = self.inputs[7].get()
-
-        for output_channel in self.outputs:
-            output_channel.set(0)
-        canvas = [0] * 24
-        
-        if 0 <= i1 <= 7:
-            canvas[i1*3 + 0] += r1 
-            canvas[i1*3 + 1] += g1 
-            canvas[i1*3 + 2] += b1
-        if 0 <= i2 <= 7:
-            canvas[i2*3 + 0] += r2 
-            canvas[i2*3 + 1] += g2 
-            canvas[i2*3 + 2] += b2
-
-        for i, value in enumerate(canvas):
-            self.outputs[i].set(value)
-
-
-FUNCTION_TYPES = {
-    "aggregator": FunctionAggregator,
-    "binary_operator": FunctionBinaryOperator,
-    "delay": FunctionDelay,
-    "delay_beats": FunctionDelayBeats,
-    "changing": FunctionChanging,
-    "custom": FunctionCustomNode,
-    "demux": FunctionDemux,
-    "global_receiver": FunctionGlobalReceiver,
-    "global_sender": FunctionGlobalSender,
-    "last_changed": FunctionLastChanged,
-    "multiplexer": FunctionMultiplexer,
-    "passthrough": FunctionPassthrough,
-    "random": FunctionRandom,
-    "scale": FunctionScale,
-    "sequencer": FunctionSequencer,
-    "separator": FunctionSeparator,
-    "sample": FunctionSample,
-    "sample_trigger": FunctionSampleTrigger,
-    "time_beat": FunctionTimeBeats,
-    "time_s": FunctionTimeSeconds,
-    "transition": FunctionTransition,
-    "toggle_on_change": FunctionToggleOnChange,
-    "canvas1x8": FunctionCanvas1x8,
-    "pixelmover1": FunctionPixelMover1,
-}
-
-
-class NodeCollection:
-    """Collection of nodes and their the a set of inputs and outputs"""
-
-    def __init__(self):
-        self.nodes: Node = []  # Needs to be a tree
-        self.links = []
-
-
-    def add_node(self, cls, arg):
-        n = len(self.nodes)
-        node = cls(arg)
-
-        self.nodes.append(node)
-        return node
-
-    def add_link(self, src_channel, dst_channel):
-        assert src_channel.direction == "out"
-        assert dst_channel.direction == "in"
-        for link in self.links:
-            if link.deleted:
-                continue
-            if link.dst_channel == dst_channel:
-                return False
-        link = ChannelLink(src_channel, dst_channel)
-        self.links.append(link)
-        return True
-
-    def del_link(self, src_channel, dst_channel):
-        found = False
-        for i, link in enumerate(self.links):
-            if link.deleted:
-                continue
-            if src_channel == link.src_channel and dst_channel == link.dst_channel:
-                found = True
-                break
-        
-        if found:
-            self.links[i].deleted = True
-        
-        return found
-
-    def link_exists(self, src_channel, dst_channel):
-        for link in self.links:
-            if link.deleted:
-                continue
-            if src_channel == link.src_channel and dst_channel == link.dst_channel:
-                return True
-        return False
-
-    def update(self):
-        for link in self.links:
-            if link.deleted:
-                continue
-            link.update()
-
-        for node in self.nodes:
-            if node.deleted:
-                continue
-            try:
-                node.transform()
-            except Exception as e:
-                print(f"{e} in {node.name}")
-
-    def serialize(self):
-        data = {
-            "nodes": [node.serialize() for node in self.nodes if not node.deleted],
-            "links": [link.serialize() for link in self.links if not link.deleted],
-        }
-        return data
-
-    def deserialize(self, data):
-        for node_data in data["nodes"]:
-            cls = FUNCTION_TYPES[node_data["type"]]
-            node = cls(args=node_data["args"], name=node_data["name"])
-            node.deserialize(node_data)
-            self.nodes.append(node)
-
-        for link_data in data["links"]:
-            link = ChannelLink()
-            link.deserialize(link_data)
-            self.links.append(link)
-        
 
 class Point(Identifier):
     def __init__(self, x=None, y=None):
@@ -1730,6 +1186,61 @@ class GlobalClipPreset(Identifier):
             track_id, clip_id, preset_id = global_preset_ids.split(":")
             self.global_presets.append((UUID_DATABASE[track_id], UUID_DATABASE[clip_id], UUID_DATABASE[preset_id]))
 
+class Code:
+    def __init__(self, code_id):
+        self.id = code_id
+        self._update_path()
+
+        if not os.path.exists(self.file_path_name):
+            Path(self.file_path_name).touch()
+
+        self.compiled = None
+
+    def reload(self):
+        try:
+            if self.file_path_name is not None:
+                with open(self.file_path_name, "r") as f:
+                    self.compiled = compile(f.read(), self.file_path_name, "exec")
+        except Exception as e:
+            _STATE.log.append(e)
+
+    def run(self, pre, post, inputs, outputs):
+        if self.compiled is not None:
+            for _input in inputs:
+                exec(f"{_input} = inputs['{_input}']")
+            for _output in outputs:
+                exec(f"{_output} = outputs['{_output}']")
+            _time = _STATE.time_since_start_s
+            _beat = _STATE.time_since_start_beat + 1
+            exec(pre.compiled)
+            exec(self.compiled)
+            exec(post.compiled)
+
+    def _update_path(self):
+        if _STATE.project_folder_path is not None:
+            self.file_path_name = os.path.join(_STATE.project_folder_path, "code", f"{self.id}.py")
+            self.temp = False
+        else:
+            self.file_path_name = tempfile.TemporaryFile().name + ".py"
+            self.temp = True
+
+    def save(self, text):
+        self._update_path()
+        
+        with open(self.file_path_name, "w") as f:
+            logger.debug("%s saved", self.file_path_name)
+            f.write(text)
+
+        if self.temp and _STATE.project_folder_path is not None:
+            new_path = os.path.join(_STATE.project_folder_path, "code", f"{self.id}.py")
+            os.rename(self.file_path_name, new_path)
+            self.file_path_name = new_path
+            self.temp = False
+
+    def read(self):
+        with open(self.file_path_name, "r") as f:
+            return f.read()
+
 
 class Clip(Identifier):
     def __init__(self, outputs=[]):
@@ -1738,7 +1249,6 @@ class Clip(Identifier):
 
         self.inputs = []
         self.outputs = outputs
-        self.node_collection = NodeCollection()
         self.presets = []
 
         # Speed to play clip
@@ -1748,6 +1258,7 @@ class Clip(Identifier):
 
         self.playing = False
 
+        self.code = Code(self.id)
 
     def create_source(self, input_type):
         if input_type.startswith("osc_input"):
@@ -1769,7 +1280,7 @@ class Clip(Identifier):
         self.inputs.append(new_source)
         return new_source
 
-    def update(self, beat):
+    def update(self, global_code, track_code, beat):
         if self.playing:
             self.time = (beat * (2**self.speed))
             for channel in self.inputs:
@@ -1777,11 +1288,30 @@ class Clip(Identifier):
                     continue
                 channel.update(self.time)
 
-            self.node_collection.update()
+            inputs = {
+                src.name: src
+                for src in self.inputs
+                if not src.deleted
+            }
+            
+            outputs = {
+                output.name: output
+                for output in self.outputs
+                if not output.deleted
+            }
+            try:
+                self.code.run(global_code, track_code, inputs, outputs)
+            except Exception as e:
+                logger.warning("Failed to execute: %s", self.code.file_path_name)
+                logger.warning(e)
+                _STATE.log.append(traceback.format_exc())
+                self.stop()
 
-    def start(self):
-        self.time = 0
+    def start(self, restart=True):
+        self.code.reload()
         self.playing = True
+        if restart:
+            self.time = 0
 
     def stop(self):
         self.playing = False
@@ -1801,10 +1331,10 @@ class Clip(Identifier):
         data = super().serialize()
         data.update({
             "name": self.name,
+            "code_file_path_name": self.code.file_path_name,
             "speed": self.speed,
             "inputs": [channel.serialize() for channel in self.inputs if not channel.deleted],
             "outputs": [channel.serialize() for channel in self.outputs if not channel.deleted],
-            "node_collection": self.node_collection.serialize(),
             "presets": [preset.serialize() for preset in self.presets if not preset.deleted]
         })
 
@@ -1816,6 +1346,8 @@ class Clip(Identifier):
         self.name = data["name"]
         self.speed = data["speed"]
         self.outputs = [UUID_DATABASE[output_data["id"]] for output_data in data["outputs"]]
+        self.code = Code(self.id)
+        self.code.reload()
 
         for input_data in data["inputs"]:
             if input_data["input_type"] in cast.keys():
@@ -1833,25 +1365,93 @@ class Clip(Identifier):
             channel.deserialize(input_data)
             self.inputs.append(channel)
 
-        self.node_collection.deserialize(data["node_collection"])
-
         for preset_data in data["presets"]:
             clip_preset = ClipPreset()
             clip_preset.deserialize(preset_data)
             self.presets.append(clip_preset)
 
+MANUAL = 0
+SEQUENCE = 1
+
+class Sequence(Identifier):
+    def __init__(self, name="", sequence_info=()):
+        super().__init__()
+        self.name = name
+        # List of (Clip, ClipPreset, duration)
+        self.sequence_info = sequence_info
+        self.length = 0
+        self.update_length()
+
+    def update_length(self):
+        self.length = 0
+        for seq in self.sequence_info:
+            self.length += seq[2]
+
+    def current_clip(self, beat):
+        current_beat = beat % self.length
+        sum_beat = 0
+        last_seq = self.sequence_info[0]
+        for seq in self.sequence_info:
+            last_seq = seq
+            clip, preset, duration = seq
+            sum_beat += duration
+
+            if current_beat < sum_beat:
+                break
+
+        clip, preset, _ = last_seq
+        return clip, preset
+
+    def serialize(self):
+        data = super().serialize()
+        data.update({
+            "name": self.name,
+            "sequence_info": [
+                (s[0].id, s[1].id, s[2])
+                for s in self.sequence_info
+            ]
+        })
+        return data
+
+    def deserialize(self, data):
+        super().deserialize(data)
+        self.name = data["name"]
+        self.sequence_info = [
+            (UUID_DATABASE[d[0]], UUID_DATABASE[d[1]], d[2])
+            for d in data["sequence_info"]
+        ]
+        self.update_length()
+
 
 class Track(Identifier):
+
     def __init__(self, name="", n_clips=20):
         super().__init__()
         self.name = name
         self.clips = [None] * n_clips
         self.outputs = []
+        self.code = Code(self.id)
+        self.sequences = []
+        self.sequence = None
 
-    def update(self, beat):
+    def update(self, global_code, beat):
+        if self.sequence is not None:
+            seq_clip, preset = self.sequence.current_clip(beat)
+            # Always execute the preset
+            preset.execute()
+            for clip in self.clips:
+                if clip is None:
+                    continue
+
+                if clip == seq_clip:
+                    if not seq_clip.playing:
+                        seq_clip.start()
+                else:
+                    clip.stop()
+
         for clip in self.clips:
             if clip is not None:
-                clip.update(beat)
+                clip.update(global_code, self.code, beat)
 
         for output in self.outputs:
             if output.deleted:
@@ -1874,6 +1474,20 @@ class Track(Identifier):
                 clip.outputs = self.outputs
         return new_output_group
 
+    def start(self, clip):
+        for other_clip in self.clips:
+            if other_clip is None or clip == other_clip:
+                continue
+            other_clip.stop()
+        clip.start()
+
+    def toggle(self, clip):
+        for other_clip in self.clips:
+            if other_clip is None or clip == other_clip:
+                continue
+            other_clip.stop()
+        clip.toggle()
+
     def __delitem__(self, key):
         self.clips[key] = None
 
@@ -1891,6 +1505,7 @@ class Track(Identifier):
         data.update({
             "name": self.name,
             "clips": [clip.serialize() if clip else None for clip in self.clips],
+            "sequences": [sequence.serialize() for sequence in self.sequences],
             "outputs": [],
         })
 
@@ -1904,6 +1519,8 @@ class Track(Identifier):
 
     def deserialize(self, data):
         super().deserialize(data)
+        self.code = Code(self.id)
+        
         self.name = data["name"]
         n_clips = len(data["clips"])
         self.clips = [None] * n_clips
@@ -1922,6 +1539,11 @@ class Track(Identifier):
             new_clip = Clip()
             new_clip.deserialize(clip_data)
             self.clips[i] = new_clip
+
+        for sequence_data in data.get("sequences", []):
+            sequence = Sequence()
+            sequence.deserialize(sequence_data)
+            self.sequences.append(sequence)
 
 
 class IO:
@@ -2252,7 +1874,8 @@ class ProgramState(Identifier):
         super().__init__()
         self.mode = "edit"
         self.project_name = "Untitled"
-        self.project_filepath = None
+        self.project_file_path = None
+        self.project_folder_path = None
         self.tracks = []
 
         for i in range(N_TRACKS):
@@ -2270,13 +1893,34 @@ class ProgramState(Identifier):
         self.time_since_start_s = 0
 
         self.global_presets = []
+        self.code = Code(GLOBAL_CODE_ID)
+        self.log = []
+        self.id = "global"
 
     def toggle_play(self):
         if self.playing:
-            self.playing = False
+            self.stop()
         else:
-            self.playing = True
-            self.play_time_start_s = time.time()
+            self.start()
+
+    def start(self):
+        # Load global functions
+        try:
+            self.code.reload()
+            for track in self.tracks:
+                track.code.reload()
+        except Exception as e:
+            logger.warning("Failed to execute: %s", self.code.file_path_name)
+            logger.warning(e)
+            _STATE.log.append(traceback.format_exc())
+            return
+
+        # Start playing
+        self.playing = True
+        self.play_time_start_s = time.time()
+    
+    def stop(self):
+        self.playing = False
 
     def update(self):
         # Update timing
@@ -2286,7 +1930,7 @@ class ProgramState(Identifier):
 
             # Update values
             for track in self.tracks:
-                track.update(self.time_since_start_beat)
+                track.update(self.code, self.time_since_start_beat)
 
             # Update DMX outputs
             all_track_outputs = []
@@ -2300,7 +1944,8 @@ class ProgramState(Identifier):
         data = {
             "tempo": self.tempo,
             "project_name": self.project_name,
-            "project_filepath": self.project_filepath,
+            "project_file_path": self.project_file_path,
+            "project_folder_path": self.project_folder_path,
             "tracks": [track.serialize() for track in self.tracks],
             "io_inputs": [None if device is None else device.serialize() for device in self.io_inputs],
             "io_outputs": [None if device is None else device.serialize() for device in self.io_outputs],
@@ -2312,7 +1957,9 @@ class ProgramState(Identifier):
     def deserialize(self, data):
         self.tempo = data["tempo"]
         self.project_name = data["project_name"]
-        self.project_filepath = data["project_filepath"]
+        self.project_file_path = data["project_file_path"]
+        self.project_folder_path = data["project_folder_path"]
+        self.code = Code(GLOBAL_CODE_ID)
 
         for i, track_data in enumerate(data["tracks"]):
             new_track = Track()
@@ -2341,6 +1988,8 @@ class ProgramState(Identifier):
             global_preset = GlobalClipPreset()
             global_preset.deserialize(global_preset_data)
             self.global_presets.append(global_preset)
+
+
 
     def duplicate_obj(self, obj):
         data = obj.serialize()
@@ -2375,13 +2024,10 @@ class ProgramState(Identifier):
             clip_id = toks[2]
             track = self.get_obj(track_id)
             clip = self.get_obj(clip_id)
-            for other_clip in track.clips:
-                if other_clip is None or clip == other_clip:
-                    continue
-                other_clip.stop()
-            clip.toggle()
+            track.toggle(clip)
+            track.sequence = None
             if clip.playing:
-                self.playing = True
+                self.start()
             return Result(True)
 
         if cmd == "play_clip":
@@ -2389,12 +2035,9 @@ class ProgramState(Identifier):
             clip_id = toks[2]
             track = self.get_obj(track_id)
             clip = self.get_obj(clip_id)
-            for other_clip in track.clips:
-                if other_clip is None or clip == other_clip:
-                    continue
-                other_clip.stop()
-            clip.start()
-            self.playing = True
+            track.sequence = None
+            track.start(clip)
+            self.start()
             return Result(True)
 
         elif cmd == "new_clip":
@@ -2424,18 +2067,9 @@ class ProgramState(Identifier):
             track = self.get_obj(track_id)
             address = int(toks[2])
             group_name = toks[3]
-            channel_names = full_command.split(" ", 4)[-1].split(',')
+            channel_names = full_command.split(" ")[-1].split(',')
             new_output_group = track.create_output_group(address, channel_names, group_name)
             return Result(True, new_output_group)
-
-        elif cmd == "create_link":
-            clip_id = toks[1]
-            src_id = toks[2]
-            dst_id = toks[3]
-            clip = self.get_obj(clip_id)
-            src_channel = self.get_obj(src_id)
-            dst_channel = self.get_obj(dst_id)
-            return Result(clip.node_collection.add_link(src_channel, dst_channel))
 
         elif cmd == "delete_node":
             # TODO: Not using clip 
@@ -2444,16 +2078,6 @@ class ProgramState(Identifier):
             obj = self.get_obj(obj_id)
             obj.deleted = True
             return Result(True)
-
-        elif cmd == "delete_link":
-            clip_id = toks[1]
-            src_id = toks[2]
-            dst_id = toks[3]
-
-            clip = self.get_obj(clip_id)
-            src_channel = self.get_obj(src_id)
-            dst_channel = self.get_obj(dst_id)
-            return Result(clip.node_collection.del_link(src_channel, dst_channel))
 
         elif cmd == "delete_clip":
             track_id, clip_i = toks[1].split(",")
@@ -2464,21 +2088,6 @@ class ProgramState(Identifier):
             clip.deleted = True
             del track[clip_i]
             return Result(True)
-
-        elif cmd == "create_node":
-            # resplit
-            toks = full_command.split(" ", 3)
-            clip_id = toks[1]
-            type_id = toks[2]
-            args = toks[3] or None
-
-            clip = self.get_obj(clip_id)
-
-            if type_id == "none":
-                node = clip.node_collection.add_node(None, None)
-            else:
-                node = clip.node_collection.add_node(FUNCTION_TYPES[type_id], args)
-            return Result(True, node)
 
         elif cmd == "delete":
             obj_id = toks[1]
@@ -2529,6 +2138,24 @@ class ProgramState(Identifier):
             global_preset = GlobalClipPreset(global_preset_name, clip_presets=clip_presets)
             self.global_presets.append(global_preset)
             return Result(True, global_preset)
+
+        elif cmd == "add_sequence":
+            data_string = " ".join(toks[1::])
+            data = json.loads(data_string)
+
+            name = data["name"]
+            track = self.get_obj(data["track"])
+            sequence_data = data["sequence_info"]
+
+            sequence_info = []
+            for si in sequence_data:
+                clip_id, preset_id, duration = si
+                clip = self.get_obj(clip_id)
+                preset = self.get_obj(preset_id)
+                sequence_info.append((clip, preset, duration))
+
+            track.sequences.append(Sequence(name, sequence_info))
+            return Result(True)
 
         elif cmd == "add_automation_point":
             automation_id = toks[1]
@@ -2642,9 +2269,8 @@ class ProgramState(Identifier):
             clip = self.get_obj(clip_id)
             obj = self.get_obj(obj_id)
             new_obj = self.duplicate_obj(obj)
-            collection = clip.node_collection.nodes if isinstance(new_obj, FunctionNode) else clip.inputs
-            collection.append(new_obj)
-            new_obj.name = update_name(new_obj.name, [obj.name for obj in collection])
+            clip.inputs.append(new_obj)
+            new_obj.name = update_name(new_obj.name, [obj.name for obj in clip.inputs])
             return Result(True, new_obj)
 
         elif cmd == "double_automation":
@@ -2728,3 +2354,13 @@ ALL_OUTPUT_TYPES = [
 ]
 
 _STATE = None
+
+FUNCTION_FACTORY = FunctionFactory()
+Storage = CodeStorage()
+GlobalStorage = GlobalCodeStorage()
+
+# Weird hack.
+# Without this, the program will hang for several seconds
+# when first adding a source node, because reinterpolate() 
+# will be called. Call first here instead.
+scipy.interpolate.interp1d([0,0], [1,1])
