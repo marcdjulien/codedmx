@@ -883,9 +883,9 @@ class FunctionDelay:
     def transform(self, cur_value, delay):
         self._delay = delay
 
-        if (time.time() - self._last_time) < (1/60.):
-            # Don't update.
-            return self._last_value
+        #if (time.time() - self._last_time) < (1/60.):
+        #    # Don't update.
+        #    return self._last_value
 
         n = self.get_n()
         n_buf = len(self._buffer)
@@ -929,31 +929,22 @@ class FunctionDecay:
 
         return self.value
 
+
 def Decay(value, decay_amount):
     obj = FUNCTION_FACTORY.get(FunctionDecay)
     return obj.transform(value, decay_amount)
 
 
 class FunctionDelayBeats(FunctionDelay):
-    nice_title = "Delay Beats"
-
-    def __init__(self, args="", name="Delay (Beats)"):
-        super().__init__(args, name)
-        self.inputs = [
-            Channel(direction="in", name=f"beats", dtype="float"),
-            Channel(direction="in", name=f"in", dtype="any")
-        ]
-        self.outputs = [
-            Channel(direction="out", name=f"out", dtype="any")
-        ]
-        self.type = "delay_beats"
-
-        self._buffer = []
-
     def get_n(self):
-        beats = self.inputs[0].get()
-        time_s = (beats / _STATE.tempo) * 60.0
+        beats = self._delay
+        time_s = (float(beats) / _STATE.tempo) * 60.0
         return int(time_s * 60)
+
+
+def DelayBeats(value, decay_amount):
+    obj = FUNCTION_FACTORY.get(FunctionDelayBeats)
+    return obj.transform(value, decay_amount)
 
 
 def NormMult(values, factor):
@@ -1131,32 +1122,34 @@ class ClipPreset(Identifier):
         super().__init__()
         self.name = name
         self.presets = presets or []
-        self.speeds = []
-        for channel, automation in self.presets:
-            self.speeds.append(channel.speed)
 
     def execute(self):
         for i, preset in enumerate(self.presets):
-            channel, automation = preset
+            channel, automation, speed = preset
             channel.set_active_automation(automation)
-            channel.speed = self.speeds[i]
+            channel.speed = speed
+
+    def update(self, preset_name, presets):
+        self.name = preset_name
+        self.presets = presets
 
     def serialize(self):
         data = super().serialize()
         data.update({
             "name": self.name,
-            "presets": [f"{channel.id}:{automation.id}" for channel, automation in self.presets],
-            "speeds": self.speeds
+            "presets": [ 
+                (channel.id, automation.id, speed )
+                for channel, automation, speed in self.presets
+            ]
         })
         return data
 
     def deserialize(self, data):
         super().deserialize(data)
         self.name = data["name"]
-        for preset_ids in data["presets"]:
-            channel_id, automation_id = preset_ids.split(":")
-            self.presets.append((UUID_DATABASE[channel_id], UUID_DATABASE[automation_id]))
-        self.speeds = data["speeds"]
+        for preset_data in data["presets"]:
+            channel_id, automation_id, speed = preset_data
+            self.presets.append((UUID_DATABASE[channel_id], UUID_DATABASE[automation_id], speed))
 
 
 class GlobalClipPreset(Identifier):
@@ -1370,8 +1363,6 @@ class Clip(Identifier):
             clip_preset.deserialize(preset_data)
             self.presets.append(clip_preset)
 
-MANUAL = 0
-SEQUENCE = 1
 
 class Sequence(Identifier):
     def __init__(self, name="", sequence_info=()):
@@ -1381,6 +1372,10 @@ class Sequence(Identifier):
         self.sequence_info = sequence_info
         self.length = 0
         self.update_length()
+
+    def update(self, name ,sequence_info):
+        self.name = name
+        self.sequence_info = sequence_info
 
     def update_length(self):
         self.length = 0
@@ -2006,6 +2001,7 @@ class ProgramState(Identifier):
             "set_active_automation",
             "toggle_clip",
             "play_clip",
+            "set_clip",
             "update_parameter"
         ]
 
@@ -2038,6 +2034,15 @@ class ProgramState(Identifier):
             track.sequence = None
             track.start(clip)
             self.start()
+            return Result(True)
+
+        elif cmd == "set_clip":
+            track_id = toks[1]
+            clip_id = toks[2]
+            track = self.get_obj(track_id)
+            clip = self.get_obj(clip_id)
+            track.sequence = None
+            track.start(clip)
             return Result(True)
 
         elif cmd == "new_clip":
@@ -2111,16 +2116,26 @@ class ProgramState(Identifier):
             return Result(True, input_channel.add_automation())
 
         elif cmd == "add_clip_preset":
-            clip_id = toks[1]
-            preset_ids = toks[2].split(",")
-            preset_name = " ".join(toks[3:])
-            clip = self.get_obj(clip_id)
+            data_string = " ".join(toks[1::])
+            data = json.loads(data_string)
+
+            preset_name = data["name"]
+            clip = self.get_obj(data["clip"])
+            all_preset_info = data["preset_info"]
 
             presets = []
-            for preset_id in preset_ids:
-                channel_id, automation_id = preset_id.split(":")
-                presets.append((self.get_obj(channel_id), self.get_obj(automation_id)))
-            preset = clip.add_preset(preset_name, presets)
+            for preset_info in all_preset_info:
+                channel = self.get_obj(preset_info["channel"])
+                automation = self.get_obj(preset_info["automation"])
+                speed = preset_info["speed"]
+                presets.append((channel, automation, speed))
+
+            if data["preset_id"]:
+                preset = self.get_obj(data["preset_id"])
+                preset.update(preset_name, presets)
+            else:
+                preset = clip.add_preset(preset_name, presets)
+
             return Result(True, preset)
 
         elif cmd == "add_global_preset":
@@ -2154,7 +2169,11 @@ class ProgramState(Identifier):
                 preset = self.get_obj(preset_id)
                 sequence_info.append((clip, preset, duration))
 
-            track.sequences.append(Sequence(name, sequence_info))
+            if data["sequence_id"]:
+                sequence = self.get_obj(data["sequence_id"])
+                sequence.update(name, sequence_info)
+            else:
+                track.sequences.append(Sequence(name, sequence_info))
             return Result(True)
 
         elif cmd == "add_automation_point":
@@ -2283,7 +2302,7 @@ class ProgramState(Identifier):
                     automation.add_point(Point(point.x+old_length, point.y))
             return Result(True)
 
-        elif cmd == "duplicate_preset":
+        elif cmd == "duplicate_channel_preset":
             input_id = toks[1]
             automation_id = toks[2]
             input_channel = self.get_obj(input_id)
@@ -2291,6 +2310,14 @@ class ProgramState(Identifier):
             new_automation = self.duplicate_obj(automation)
             input_channel.add_automation(new_automation)
             return Result(True, new_automation)
+
+        elif cmd == "duplicate_clip_preset":
+            clip_id = toks[1]
+            preset_id = toks[2]
+            clip = self.get_obj(clip_id)
+            preset = self.get_obj(preset_id)
+            new_preset = clip.add_preset(preset.name, preset.presets)
+            return Result(True, new_preset)
 
         elif cmd == "midi_map":
             obj_id = toks[1]

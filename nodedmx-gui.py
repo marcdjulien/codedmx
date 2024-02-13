@@ -1,6 +1,8 @@
 """
 TODO: 
-    * Change tab color for currently playing automation, update on every cycle like update_clip_window()
+    * Sequence editing, deleting, reordering
+    * Preset editing 
+    * Change tab color for currently playing automation, update on every cycle like update_clip_window(), may not be nessecary after
     * Auto reload code
     * Dont allow spaces and special characters in node names
     * Don't allow code to poison objects
@@ -111,6 +113,26 @@ def get_clip_slot_group_tag(track_i, clip_i):
 def get_preset_menu_bar_tag(preset):
     return f"{preset.id}.menu_bar"
 
+def get_preset_sub_menu_tag(automation):
+    return f"{automation.id}.preset_menu"
+
+def get_sequences_group_tag(track):
+    return f"{track.id}.sequences_group"
+
+def get_sequence_button_tag(sequence):
+    return f"{sequence.id}.button"
+
+def get_preset_button_tag(preset):
+    return f"{preset.id}.button"
+
+def get_channel_preset_theme(preset):
+    return f"{preset.id}.theme"
+
+def get_automation_button_tag(automation):
+    return f"{automation.id}.button"
+
+
+
 def show_callback(sender, app_data, user_data):
     dpg.configure_item(user_data, show=True)
 
@@ -193,6 +215,8 @@ class SelectClip(GuiAction):
         else:
             dpg.configure_item(get_code_window_tag(self.state), show=True)
 
+        if self.state.mode == "performance":
+            self.gui.create_and_show_all_automation_window(None, None, clip)
 
     def undo(self):
         self.gui.save_last_active_clip()
@@ -339,10 +363,12 @@ class NewClip(GuiAction):
 
                 preset_menu_tag = f"{menu_tag}.preset_menu"
                 with dpg.menu(label="Presets", tag=preset_menu_tag):
-                    dpg.add_menu_item(label="New Preset", callback=self.gui.show_save_presets_window, user_data=clip)
+                    dpg.add_menu_item(label="New Preset", callback=self.gui.create_and_show_save_presets_window, user_data=(clip, None))
                     dpg.add_menu_item(label="Reorder", callback=self.gui.create_and_show_reorder_window, user_data=(clip.presets, preset_menu_tag, get_preset_menu_bar_tag))
                     for preset in clip.presets:
-                        self.gui.add_clip_preset_menu(clip, preset)
+                        self.gui.add_clip_preset_to_menu(clip, preset)
+
+                dpg.add_menu_item(label="Show All Automation", callback=self.gui.create_and_show_all_automation_window, user_data=clip)
 
 
         ###############
@@ -413,8 +439,12 @@ class Gui:
         self._active_input_channel = None
         self._inspecter_x = list(range(500))
 
+        self._last_selected_preset_button_tag = None
+        self._last_selected_preset_theme_tag = None
+
         self._properties_buffer = defaultdict(dict)
         self._global_presets_buffer = {}
+        self._clip_preset_buffer = {}
         self._new_sequence_buffer = {}
         self._new_sequence_duration = {}
         self._n_sequence_rows = 0
@@ -526,6 +556,16 @@ class Gui:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (0, 100, 255, 10), category=dpg.mvThemeCat_Core)
                 dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 100, 255, 50), category=dpg.mvThemeCat_Core)
+
+        with dpg.theme(tag="selected_preset.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(target=dpg.mvThemeCol_Text, value=[0, 0, 0, 255], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(target=dpg.mvThemeCol_Button, value=[255, 255, 0, 255], category=dpg.mvThemeCat_Core)
+
+        with dpg.theme(tag="not_selected_preset.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(target=dpg.mvThemeCol_Text, value=[255, 255, 255, 255], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(target=dpg.mvThemeCol_Button, value=[50, 50, 50, 255], category=dpg.mvThemeCat_Core)
 
         self._active_track = self.state.tracks[0]
 
@@ -697,10 +737,14 @@ class Gui:
                     dpg.focus_item("io.gui.window")                    
                 dpg.add_menu_item(label="I/O", callback=show_io_window)
 
-                def show_performance_presets_window():
-                    dpg.configure_item("performance_preset.gui.window", show=True)
-                    dpg.focus_item("performance_preset.gui.window")
-                dpg.add_menu_item(label="All Presets", callback=show_performance_presets_window)
+                def show_inspector():
+                    dpg.configure_item("inspector.gui.window", show=False)
+                    dpg.configure_item("inspector.gui.window", show=True)
+                    dpg.focus_item("inspector.gui.window")
+                dpg.add_menu_item(label="Inspector", callback=show_inspector)
+
+            with dpg.menu(label="Performance"):
+                dpg.add_menu_item(label="All Presets", callback=self.create_and_show_performance_preset_window)
 
                 def show_global_performance_presets_window():
                     dpg.configure_item("global_performance_preset.gui.window", show=True)
@@ -710,11 +754,6 @@ class Gui:
                 dpg.add_menu_item(label="Sequences", callback=self.create_and_show_track_sequences_window)
 
 
-                def show_inspector():
-                    dpg.configure_item("inspector.gui.window", show=False)
-                    dpg.configure_item("inspector.gui.window", show=True)
-                    dpg.focus_item("inspector.gui.window")
-                dpg.add_menu_item(label="Inspector", callback=show_inspector)
 
             # Transport 
             transport_start_x = 800
@@ -752,7 +791,6 @@ class Gui:
 
         self.create_inspector_window()
         self.create_io_window()
-        self.create_performance_preset_window()
         self.create_global_performance_preset_window()
         self.create_rename_window()
 
@@ -788,7 +826,11 @@ class Gui:
 
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
-        result = self.execute_wrapper(f"play_clip {track.id} {clip.id}")
+        if self.ctrl:
+            result = self.execute_wrapper(f"play_clip {track.id} {clip.id}")
+        else:
+            result = self.execute_wrapper(f"set_clip {track.id} {clip.id}")
+
 
     def toggle_clip_play_callback(self, sender, app_data, user_data):
         track, clip = user_data
@@ -850,34 +892,55 @@ class Gui:
             else:
                 dpg.highlight_table_column("clip_window.table", track_i, color=[0, 0, 0, 0])
 
-    def add_clip_preset_menu(self, clip, preset):
+    def add_clip_preset_to_menu(self, clip, preset, before=None):
         window_tag = get_node_window_tag(clip)
         menu_tag = f"{window_tag}.menu_bar"
         preset_menu_tag = f"{menu_tag}.preset_menu"
         preset_menu_bar = get_preset_menu_bar_tag(preset)
-        menu_theme = preset_menu_bar + ".theme"
+        menu_theme = get_channel_preset_theme(preset)
 
         def set_color(sender, app_data, user_data):
-            dpg.configure_item(f"{menu_theme}.color", value=user_data)
-            self.gui_state["clip_preset_themes"][f"{menu_theme}.color"] = user_data
+            if app_data is None:
+                color = dpg.get_value(sender)
+            else:
+                color = [int(255*v) for v in app_data]
+            dpg.configure_item(f"{menu_theme}.text_color", value=color)
+            dpg.configure_item(f"{menu_theme}.button_bg_color", value=color)
+            self.gui_state["clip_preset_themes"][f"{menu_theme}.text_color"] = color
+            self.gui_state["clip_preset_themes"][f"{menu_theme}.button_bg_color"] = color
 
-        with dpg.menu(parent=preset_menu_tag, tag=preset_menu_bar, label=preset.name, drop_callback=self.print_callback):
-            dpg.add_menu_item(tag=f"{preset_menu_bar}.activate", label="Activate", callback=self.select_clip_preset, user_data=preset)
+        def duplicate_clip_preset(sender, app_data, user_data):
+            clip, preset = user_data
+            result = self.execute_wrapper(f"duplicate_clip_preset {clip.id} {preset.id}")
+            if result.success:
+                self.add_clip_preset_to_menu(clip, result.payload, before=preset)
+
+        with dpg.menu(parent=preset_menu_tag, tag=preset_menu_bar, label=preset.name, drop_callback=self.print_callback, before=get_preset_menu_bar_tag(before) if valid(before) else 0):
+            dpg.add_menu_item(tag=f"{preset_menu_bar}.activate", label="Activate", callback=self.play_clip_preset_callback, user_data=preset)
+            dpg.add_menu_item(tag=f"{preset_menu_bar}.edit", label="Edit", callback=self.create_and_show_save_presets_window, user_data=(clip, preset))
+            dpg.add_menu_item(tag=f"{preset_menu_bar}.duplicate", label="Duplicate", callback=duplicate_clip_preset, user_data=(clip, preset))
             with dpg.menu(label="Select Color"):
-                dpg.add_menu_item(label="Red", callback=set_color, user_data=(255, 0, 0))
-                dpg.add_menu_item(label="Blue", callback=set_color, user_data=(0, 0, 255))
-                dpg.add_menu_item(label="Green", callback=set_color, user_data=(0, 255, 0))
-                dpg.add_menu_item(label="White", callback=set_color, user_data=(255, 255, 255))
-                dpg.add_menu_item(label="Black", callback=set_color, user_data=(0, 0, 0))
+                with dpg.group(horizontal=True):
+                    dpg.add_color_button(callback=set_color, default_value=(0, 200, 255))
+                    dpg.add_color_button(callback=set_color, default_value=(0, 255, 100))
+                    dpg.add_color_button(callback=set_color, default_value=(255, 100, 100))
+                    dpg.add_color_button(callback=set_color, default_value=(255, 255, 255))
+                    dpg.add_color_button(callback=set_color, default_value=(0, 0, 0))
+                dpg.add_color_picker(display_type=dpg.mvColorEdit_uint8 , callback=set_color)
             dpg.add_menu_item(tag=f"{preset_menu_bar}.delete", label="Delete", callback=self.delete_clip_preset, user_data=preset)
 
         with dpg.theme(tag=menu_theme):
             with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_color(tag=f"{menu_theme}.color", target=dpg.mvThemeCol_Text, value=[255, 255, 255, 255], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(tag=f"{menu_theme}.text_color", target=dpg.mvThemeCol_Text, value=[255, 255, 255, 255], category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(tag=f"{menu_theme}.button_bg_color", target=dpg.mvThemeCol_Border, value=[255, 255, 255, 255], category=dpg.mvThemeCat_Core)
         dpg.bind_item_theme(preset_menu_bar, menu_theme)
 
-    def show_save_presets_window(self, sender, app_data, user_data):
-        clip = user_data
+    def create_and_show_save_presets_window(self, sender, app_data, user_data):
+        clip, preset = user_data
+
+        # If a valid preset was passed in, this means we're editing it.
+        # Otherwise, we're creating a new one.
+        editing = valid(preset)
 
         window_tag = get_node_window_tag(clip)
         preset_window_tag = "preset_window"
@@ -892,35 +955,65 @@ class Gui:
         def save(sender, app_data, user_data):
             presets = []
             for i, channel in enumerate(clip.inputs):
-                include = dpg.get_value(f"preset.{i}")
+                include = dpg.get_value(f"preset.{i}.include")
                 if include:
-                    presets.append(":".join([channel.id, channel.active_automation.id]))
+                    presets.append({
+                        "channel": channel.id,
+                        "automation": self._clip_preset_buffer[channel.id],
+                        "speed": dpg.get_value(f"preset.{i}.speed")
+                        })
             
             if presets:
-                name = dpg.get_value("preset.name")
-                result = self.execute_wrapper(f"add_clip_preset {clip.id} {','.join(presets)} {name}")
+                data = {
+                    "clip": clip.id,
+                    "name": dpg.get_value("preset.name"),
+                    "preset_info": presets,
+                    "preset_id": preset.id if editing else None,
+                }
+
+                result = self.execute_wrapper(f"add_clip_preset {json.dumps(data)}")
                 if result.success:
-                    node_editor_tag = get_node_editor_tag(clip)
-                    tab_bar_tag = f"{node_editor_tag}.tab_bar"
-                    preset = result.payload
-                    self.add_clip_preset_menu(clip, preset)
-                    dpg.delete_item(preset_window_tag)
-                    self.create_performance_preset_window()
+                    if editing:
+                        dpg.configure_item(get_preset_menu_bar_tag(preset), label=preset.name)
+                    else:
+                        new_preset = result.payload
+                        self.add_clip_preset_to_menu(clip, new_preset)
+        
+                    self._clip_preset_buffer.clear()
+                    dpg.delete_item("preset_window")
                 else:
                     logger.warning("Failed to add clip preset")
 
-        with dpg.window(tag=preset_window_tag, modal=True, width=500, height=500, no_move=True):
+        def set_automation(sender, app_data, user_data):
+            channel, automation = user_data
+            self._clip_preset_buffer[channel.id] = automation.id
+            dpg.configure_item(f"{channel.id}.select_preset_bar", label=automation.name)
+
+        with dpg.window(tag=preset_window_tag, modal=True, width=600, height=500, no_move=True):
             with dpg.table(header_row=False, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column()
+                dpg.add_table_column()
                 dpg.add_table_column()
                 dpg.add_table_column()
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Preset Name")
-                    dpg.add_input_text(tag="preset.name")
+                    dpg.add_input_text(tag="preset.name", default_value = preset.name if editing else "")
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Channel")
+                    dpg.add_text(default_value="Preset")
+                    dpg.add_text(default_value="Speed (2^n)")
                     dpg.add_text(default_value="Include")
+
+
+                preset_data = {}
+                speed_data = {}
+                if editing:
+                    preset_data = {
+                        channel.id: (automation, speed)
+                        for channel, automation, speed in preset.presets
+                    }
 
                 for i, channel in enumerate(clip.inputs):
                     # TODO: Include constants in presets
@@ -929,7 +1022,18 @@ class Gui:
                     
                     with dpg.table_row():
                         dpg.add_text(default_value=channel.name)
-                        dpg.add_checkbox(tag=f"preset.{i}")
+                        
+                        with dpg.menu(tag=f"{channel.id}.select_preset_bar", label="Select Preset"):
+                            for automation in channel.automations:
+                                dpg.add_menu_item(label=automation.name, callback=set_automation, user_data=(channel, automation))
+                        if channel.id in preset_data:
+                            set_automation(None, None, (channel, preset_data[channel.id][0]))
+                        elif valid(channel.active_automation):                            
+                            set_automation(None, None, (channel, channel.active_automation))
+
+                        dpg.add_input_int(tag=f"preset.{i}.speed", default_value=preset_data[channel.id][1] if channel.id in preset_data else channel.speed)
+
+                        dpg.add_checkbox(tag=f"preset.{i}.include", default_value=channel.id in preset_data)
 
                 with dpg.table_row():
                     dpg.add_group()
@@ -967,7 +1071,7 @@ class Gui:
                 else:
                     logger.warning("Failed to add clip preset")
 
-        with dpg.window(tag=save_global_preset_window_tag, modal=True, width=500, height=500, no_move=True):
+        with dpg.window(tag=save_global_preset_window_tag, no_title_bar=True, modal=True, width=500, height=500, no_move=True):
             with dpg.table(header_row=False, policy=dpg.mvTable_SizingStretchProp):
                 dpg.add_table_column()
                 dpg.add_table_column()
@@ -1011,11 +1115,20 @@ class Gui:
                         dpg.add_button(label="Save", callback=save)
                         dpg.add_button(label="Cancel", callback=cancel)
 
-    def select_clip_preset(self, sender, app_data, user_data):
+    def play_clip_preset_callback(self, sender, app_data, user_data):
         preset = user_data
         preset.execute()
         if valid(self._active_input_channel):
             self.reset_automation_plot(self._active_input_channel)
+
+        # Reset last button
+        if self._last_selected_preset_button_tag is not None and self._last_selected_preset_theme_tag is not None:
+            dpg.bind_item_theme(self._last_selected_preset_button_tag, self._last_selected_preset_theme_tag)
+        
+        # Set new button theme
+        self._last_selected_preset_button_tag = get_preset_button_tag(preset)
+        self._last_selected_preset_theme_tag = get_channel_preset_theme(preset)
+        dpg.bind_item_theme(get_preset_button_tag(preset), "selected_preset.theme")
 
     def delete_clip_preset(self, sender, app_data, user_data):
         preset = user_data
@@ -1576,6 +1689,16 @@ class Gui:
         else:
             dpg.bind_item_theme(tag + ".text", "code_editor.global.theme")
 
+
+    def default_time_callback(self, sender, app_data, user_data):
+        user_data.speed = 0
+
+    def double_time_callback(self, sender, app_data, user_data):
+        user_data.speed += 1
+
+    def half_time_callback(self, sender, app_data, user_data):
+        user_data.speed -= 1
+
     def create_automation_window(self, clip, input_channel):
         parent = get_source_node_window_tag(input_channel)
         with dpg.window(
@@ -1598,35 +1721,34 @@ class Gui:
             playhead_tag = f"{input_channel.id}.gui.playhead"
             ext_value_tag = f"{input_channel.id}.gui.ext_value"
             menu_tag = f"{input_channel.id}.menu"
-            tab_bar_tag = f"{input_channel.id}.tab_bar"
 
             with dpg.menu_bar(tag=menu_tag):
 
                 dpg.add_menu_item(tag=f"{input_channel.id}.gui.automation_enable_button", label="Disable" if input_channel.mode == "automation" else "Enable", callback=self.toggle_automation_mode, user_data=input_channel)
-                dpg.add_menu_item(tag=f"{input_channel.id}.gui.automation_record_button", label="Record", callback=self.enable_recording_mode, user_data=input_channel)
+                #dpg.add_menu_item(tag=f"{input_channel.id}.gui.automation_record_button", label="Record", callback=self.enable_recording_mode, user_data=input_channel)
 
+                preset_menu_tag = f"{input_channel.id}.preset_menu"
+                with dpg.menu(tag=preset_menu_tag, label="Automation"):
+                    dpg.add_menu_item(label="New Automation", callback=self.add_preset, user_data=input_channel)
+                    dpg.add_menu_item(label="Reorder", callback=self.create_and_show_reorder_window, user_data=(input_channel.automations, preset_menu_tag, get_preset_sub_menu_tag))
+                    for automation in input_channel.automations:
+                        self.add_automation_tab(input_channel, automation)
 
-                def default_time(sender, app_data, user_data):
-                    user_data.speed = 0
                 dpg.add_menu_item(
-                    label="x1",
-                    callback=default_time,
+                    label="1",
+                    callback=self.default_time_callback,
                     user_data=input_channel,
                 )
 
-                def double_time(sender, app_data, user_data):
-                    user_data.speed += 1
                 dpg.add_menu_item(
                     label="x2",
-                    callback=double_time,
+                    callback=self.double_time_callback,
                     user_data=input_channel,
                 )
 
-                def half_time(sender, app_data, user_data):
-                    user_data.speed -= 1
                 dpg.add_menu_item(
                     label="/2",
-                    callback=half_time,
+                    callback=self.half_time_callback,
                     user_data=input_channel,
                 )
 
@@ -1642,7 +1764,10 @@ class Gui:
                     if automation is None:
                         return
                     automation.name = app_data
-                    dpg.configure_item(f"{automation.id}.button", label=app_data)
+
+                    preset_menu_tag = f"{input_channel.id}.preset_menu"
+                    preset_sub_menu_tag = get_preset_sub_menu_tag(automation)
+                    dpg.configure_item(preset_sub_menu_tag, label=app_data)
 
                 prop_x_start = 600
                 dpg.add_text("Preset:", pos=(prop_x_start-200, 0))
@@ -1650,16 +1775,6 @@ class Gui:
                 
                 dpg.add_text("Beats:", pos=(prop_x_start+200, 0))
                 dpg.add_input_text(tag=f"{parent}.beats", label="", default_value=input_channel.active_automation.length, pos=(prop_x_start+230, 0), on_enter=True, callback=update_automation_length, user_data=input_channel, width=50)
-
-            #tab_bar_tag = f"{input_channel.id}.tab_bar"
-            #with dpg.tab_bar(tag=tab_bar_tag):
-            #    for automation in input_channel.automations:
-            #        self.add_preset_tab(input_channel, automation)
-            #    dpg.add_tab_button(label="+", callback=self.add_preset, user_data=input_channel, trailing=True)
-            menu_bar_tag = f"{input_channel.id}.preset_menu_bar"
-            with dpg.menu_bar(tag=menu_bar_tag):
-                dpg.add_menu_item(label="New Preset")
-
 
             with dpg.plot(label=input_channel.active_automation.name, height=-1, width=-1, tag=plot_tag, query=True, callback=self.print_callback, anti_aliased=True, no_menus=True):
                 min_value = input_channel.get_parameter("min").value
@@ -1698,7 +1813,7 @@ class Gui:
 
                 with dpg.popup(plot_tag, mousebutton=1):
                     dpg.add_menu_item(label="Double Automation", callback=self.double_automation)
-                    dpg.add_menu_item(label="Duplicate Preset", callback=self.duplicate_preset)
+                    dpg.add_menu_item(label="Duplicate Preset", callback=self.duplicate_channel_preset)
                     with dpg.menu(label="Set Quantize"):
                         dpg.add_menu_item(label="Off", callback=self.set_quantize, user_data=None)
                         dpg.add_menu_item(label="1 bar", callback=self.set_quantize, user_data=4)
@@ -1825,7 +1940,7 @@ class Gui:
         if result.success:
             self.reset_automation_plot(self._active_input_channel)
 
-    def duplicate_preset(self):
+    def duplicate_channel_preset(self):
         if self._active_input_channel is None:
             return
         
@@ -1833,14 +1948,14 @@ class Gui:
         if automation is None:
             return
 
-        result = self.execute_wrapper(f"duplicate_preset {self._active_input_channel.id} {automation.id}")
+        result = self.execute_wrapper(f"duplicate_channel_preset {self._active_input_channel.id} {automation.id}")
         if result.success:
             automation = result.payload
-            self.add_preset_tab(self._active_input_channel, automation)
-            self.select_preset(None, None, (self._active_input_channel, automation))
+            self.add_automation_tab(self._active_input_channel, automation)
+            self.select_automation(None, None, (self._active_input_channel, automation))
 
     
-    def delete_preset(self, sender, app_data, user_data):
+    def delete_automation(self, sender, app_data, user_data):
         input_channel, automation = user_data
         
         def get_valid_automations(input_channel):
@@ -1850,13 +1965,9 @@ class Gui:
             return
 
         result = self.execute_wrapper(f"delete {automation.id}")
+
         if result.success:
-            tags_to_delete = [
-                f"{automation.id}.button",
-                f"{automation.id}.button.x", 
-            ]
-            for tag in tags_to_delete:
-                dpg.delete_item(tag)
+            dpg.delete_item(get_preset_sub_menu_tag(automation))
 
         if input_channel.active_automation == automation:
             input_channel.set_active_automation(get_valid_automations(input_channel)[0])
@@ -1867,15 +1978,17 @@ class Gui:
         result = self.execute_wrapper(f"add_automation {input_channel.id}")
         if result.success:
             automation = result.payload
-            self.add_preset_tab(input_channel, automation)
+            self.add_automation_tab(input_channel, automation)
             self.reset_automation_plot(input_channel)
 
-    def add_preset_tab(self, input_channel, automation):
-        tab_bar_tag = f"{input_channel.id}.tab_bar"
-        dpg.add_tab_button(tag=f"{automation.id}.button", parent=tab_bar_tag, label=automation.name, callback=self.select_preset, user_data=(input_channel, automation))
-        dpg.add_tab_button(tag=f"{automation.id}.button.x", parent=tab_bar_tag, label="X", callback=self.delete_preset, user_data=(input_channel, automation))
+    def add_automation_tab(self, input_channel, automation):
+        preset_menu_tag = f"{input_channel.id}.preset_menu"
+        preset_sub_menu_tag = get_preset_sub_menu_tag(automation)
+        with dpg.menu(parent=preset_menu_tag, tag=preset_sub_menu_tag, label=automation.name):
+            dpg.add_menu_item(tag=f"{preset_sub_menu_tag}.activate", label="Activate", callback=self.select_automation, user_data=(input_channel, automation))
+            dpg.add_menu_item(tag=f"{preset_sub_menu_tag}.delete", label="Delete", callback=self.delete_automation, user_data=(input_channel, automation))
 
-    def select_preset(self, sender, app_data, user_data):
+    def select_automation(self, sender, app_data, user_data):
         input_channel, automation = user_data
         result = self.execute_wrapper(f"set_active_automation {input_channel.id} {automation.id}")
         if result.success:
@@ -2079,6 +2192,48 @@ class Gui:
 
                         dpg.add_table_cell()
 
+    def create_and_show_all_automation_window(self, sender, app_data, user_data):
+        clip = user_data
+        try:
+            pos = dpg.get_item_pos("all_automation.gui.window")
+            dpg.delete_item("all_automation.gui.window")
+        except Exception as e:
+            pos = (100, 100)
+
+        def activate_automation(sender, app_data, user_data):
+            clip, channel, automation = user_data
+            channel.set_active_automation(automation)
+
+            for channel in clip.inputs:
+                for automation in channel.automations:
+                    dpg.bind_item_theme(get_automation_button_tag(automation), "selected_preset.theme" if channel.active_automation == automation else "not_selected_preset.theme")
+
+        with dpg.window(
+            label=f"All Automation",
+            width=600,
+            height=400,
+            pos=pos,
+            show=True,
+            tag="all_automation.gui.window"
+        ) as window:
+            dpg.add_button(label="Refresh", callback=self.create_and_show_all_automation_window, user_data=clip)
+            with dpg.table(tag="all_automation.table"):
+
+                for channel in clip.inputs:
+                    dpg.add_table_column(label=channel.name)
+
+                with dpg.table_row():
+                    for channel in clip.inputs:
+                        with dpg.table_cell():
+                            with dpg.group(horizontal=True):
+                                dpg.add_button(label="1", callback=self.default_time_callback, user_data=channel)
+                                dpg.add_button(label="x2", callback=self.double_time_callback, user_data=channel)
+                                dpg.add_button(label="/2", callback=self.half_time_callback, user_data=channel)
+                            for automation in channel.automations:
+                                #dpg.add_button(tag=get_preset_button_tag(preset), label=preset.name, callback=activate_automation, user_data=(track, clip, preset))
+                                dpg.add_button(tag=get_automation_button_tag(automation), label=automation.name, callback=activate_automation, user_data=(clip, channel, automation))
+                                dpg.bind_item_theme(dpg.last_item(), "selected_preset.theme" if channel.active_automation == automation else "not_selected_preset.theme")
+
     def create_and_show_reorder_window(self, sender, app_data, user_data):
         container, parent_tag, get_obj_tag_func = user_data
         
@@ -2087,7 +2242,6 @@ class Gui:
             dpg.delete_item("reorder.gui.window")
         except Exception as e:
             pos = (100, 100)
-            pass
 
         def swap(container, i, j):
             pass
@@ -2110,7 +2264,6 @@ class Gui:
 
             self.create_and_show_reorder_window(sender, app_data, user_data)
 
-
         with dpg.window(
             label=f"Reorder",
             width=800,
@@ -2128,25 +2281,28 @@ class Gui:
                             dpg.add_button(label=" - ", callback=move, user_data=(container, i, i-1))
                             dpg.add_button(label=" + ", callback=move, user_data=(container, i, i+1))
 
-    def create_performance_preset_window(self):
+    def create_and_show_performance_preset_window(self):
         try:
+            pos = dpg.get_item_pos("performance_preset.gui.window")
             dpg.delete_item("performance_preset.gui.window")
         except Exception as e:
-            pass
+            pos = (100, 100)
 
-        def play_clip_preset(sender, app_data, user_data):
+        def play_clip_and_preset(sender, app_data, user_data):
             track, clip, preset = user_data
             self.play_clip_callback(None, None, (track, clip))
-            preset.execute()
+            self.play_clip_preset_callback(None, None, preset)
+            SelectClip({"track":track, "clip":clip}).execute()
 
         with dpg.window(
             label=f"Clip Presets",
             width=800,
             height=800,
-            pos=(100, 100),
-            show=False,
+            pos=pos,
+            show=True,
             tag="performance_preset.gui.window"
         ) as window:
+            dpg.add_button(label="Refresh", callback=self.create_and_show_performance_preset_window)
             with dpg.table(tag="performance_preset.table"):
 
                 for i, track in enumerate(self.state.tracks):
@@ -2163,10 +2319,12 @@ class Gui:
                                         pass
                                 else:
                                     with dpg.group(tag=f"{clip.id}.performance_preset_window.group"):
+                                        if not clip.presets:
+                                            continue
                                         dpg.add_text(source=f"{clip.id}.name")
                                         for preset in clip.presets:
-                                            dpg.add_button(label=preset.name, callback=play_clip_preset, user_data=(track, clip, preset))
-
+                                            dpg.add_button(tag=get_preset_button_tag(preset), label=preset.name, callback=play_clip_and_preset, user_data=(track, clip, preset))
+                                            dpg.bind_item_theme(dpg.last_item(), get_channel_preset_theme(preset))
 
     def create_global_performance_preset_window(self):
         try:
@@ -2214,7 +2372,9 @@ class Gui:
 
                 with dpg.table_row():
                     for track in self.state.tracks:
-                        dpg.add_button(label="+", callback=self.create_and_show_new_sequences_window, user_data=track)
+                        with dpg.group():
+                            dpg.add_menu_item(label="New Sequence", callback=self.create_and_show_new_sequences_window, user_data=(track, None))
+                            dpg.add_menu_item(label="Reorder", callback=self.create_and_show_reorder_window, user_data=(track.sequences, get_sequences_group_tag(track), get_sequence_button_tag))
 
                 def start_sequence(sender, app_data, user_data):
                     track, sequence = user_data
@@ -2223,13 +2383,16 @@ class Gui:
 
                 with dpg.table_row():
                     for track in self.state.tracks:
-                        with dpg.group():
+                        with dpg.group(tag=get_sequences_group_tag(track)):
                             for sequence in track.sequences:
-                                dpg.add_button(label=sequence.name, callback=start_sequence, user_data=(track, sequence))
-
+                                dpg.add_button(tag=get_sequence_button_tag(sequence), label=sequence.name, callback=start_sequence, user_data=(track, sequence))
+                                with dpg.popup(dpg.last_item()):
+                                    dpg.add_menu_item(label="Edit", callback=self.create_and_show_new_sequences_window, user_data=(track, sequence))
 
     def create_and_show_new_sequences_window(self, sender, app_data, user_data):
-        track = user_data
+        track, sequence = user_data
+        editing = valid(sequence)
+
         new_sequence_window = "new_sequence_window"
         try:
             dpg.delete_item(new_sequence_window)
@@ -2251,7 +2414,7 @@ class Gui:
 
             if sequence_info:
                 name = dpg.get_value("sequence.name")
-                data = json.dumps({"sequence_info":sequence_info, "name":name, "track":track.id})
+                data = json.dumps({"sequence_info":sequence_info, "name":name, "track":track.id, "sequence_id":sequence.id if editing else None})
 
                 result = self.execute_wrapper(f"add_sequence {data}")
                 if result.success:
@@ -2265,8 +2428,19 @@ class Gui:
                 else:
                     self.state.log.append("Failed to add sequence")
 
+        def preset_selected(sender, app_data, user_data):
+            i, title, clip, preset = user_data
+            self._new_sequence_buffer[int(i)] = [clip.id, preset.id] 
+            dpg.configure_item(item=f"{new_sequence_window}.menu_bar.{i}.title", label=title)
+
+        def set_duration(sender, app_data, user_data):
+            duration = app_data
+            i = user_data
+            self._new_sequence_duration[int(i)] = duration
+            dpg.set_value(f"{new_sequence_window}.{i}.duration", duration)
+
         self._n_sequence_rows = 0
-        with dpg.window(tag=new_sequence_window, modal=True, width=500, height=500, no_move=True):    
+        with dpg.window(label="New Sequence", tag=new_sequence_window, no_title_bar=True, modal=True, width=500, height=500, no_move=True, pos=(500, 500)):    
 
             def add_rows(sender, app_data, callback):
                 final_n_rows = app_data
@@ -2276,27 +2450,17 @@ class Gui:
                         with dpg.table_row(parent=f"{new_sequence_window}.table", before=f"{new_sequence_window}.table.save_cancel_row"):
                             self._new_sequence_duration[int(i)] = DEFAULT_SEQUENCE_DURATION 
 
-                            def preset_selected(sender, app_data, user_data):
-                                i, title, clip, preset = user_data
-                                self._new_sequence_buffer[int(i)] = [clip.id, preset.id] 
-                                dpg.configure_item(item=f"{new_sequence_window}.menu_bar.{i}.title", label=title)
-
                             with dpg.menu(tag=f"{new_sequence_window}.menu_bar.{i}.title", label="Select Clip Preset"):
                                 for clip in track.clips:
                                     if not valid(clip):
                                         continue
                                     for preset in clip.presets:
                                         title = f"{clip.name}: {preset.name}"
-                                        dpg.add_menu_item(label=title, callback=preset_selected, user_data=(i, title, clip, preset))
-                            
-                            def set_duration(sender, app_data, user_data):
-                                i = user_data
-                                self._new_sequence_duration[int(i)] = app_data 
+                                        dpg.add_menu_item(label=title, callback=preset_selected, user_data=(i, title, clip, preset))                            
 
-                            dpg.add_input_int(default_value=DEFAULT_SEQUENCE_DURATION, callback=set_duration, user_data=i)
+                            dpg.add_input_int(tag=f"{new_sequence_window}.{i}.duration", default_value=DEFAULT_SEQUENCE_DURATION, callback=set_duration, user_data=i)
                         
                         self._n_sequence_rows += 1
-
 
             with dpg.table(tag=f"{new_sequence_window}.table", header_row=False, policy=dpg.mvTable_SizingStretchProp):
                 dpg.add_table_column(width=100)
@@ -2305,18 +2469,31 @@ class Gui:
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Sequence Name")
-                    dpg.add_input_text(tag="sequence.name")
+                    dpg.add_input_text(tag="sequence.name", default_value=sequence.name if editing else "")
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Num. Entries ")
-                    dpg.add_input_int(default_value=1, callback=add_rows, on_enter=True)
+                    dpg.add_input_int(default_value=len(sequence.sequence_info) if editing else 1, callback=add_rows, on_enter=True)
+
+                # Empty Row
+                with dpg.table_row():
+                    dpg.add_text()
+                    dpg.add_text()
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Clip Preset")
                     dpg.add_text(default_value="Duration (Beats)")
 
-                # Start with 1 row
-                add_rows(None, 1, None)
+                if editing:
+                    add_rows(None, len(sequence.sequence_info), None)
+                    for i, si in enumerate(sequence.sequence_info):
+                        clip, preset, duration = si
+                        title = f"{clip.name}: {preset.name}"
+                        preset_selected(None, None, (i, title, clip, preset))
+                        set_duration(None, duration, i)
+                else:
+                    # Start with 1 row
+                    add_rows(None, 1, None)
 
                 with dpg.table_row(tag=f"{new_sequence_window}.table.save_cancel_row"):
                     dpg.add_group()
