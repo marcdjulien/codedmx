@@ -767,7 +767,7 @@ class Gui:
             #dpg.add_text("Tempo:", pos=(transport_start_x + 90,0))
             dpg.add_input_float(label="Tempo", default_value=self.state.tempo, pos=(transport_start_x + 75, 0), on_enter=True, callback=update_tempo, width=45, tag="tempo", step=0)
 
-            dpg.add_button(label="[Play]", callback=self.toggle_play_callback, pos=(transport_start_x + 220, 0), tag="play_button")
+            dpg.add_button(label="[Paused]", callback=self.toggle_play_callback, pos=(transport_start_x + 220, 0), tag="play_button")
             dpg.bind_item_theme("play_button", "transport.play_button.pause.theme")
 
             def mode_change():
@@ -2205,6 +2205,8 @@ class Gui:
             channel.set_active_automation(automation)
 
             for channel in clip.inputs:
+                if not isinstance(channel, model.AutomatableSourceNode):
+                    continue
                 for automation in channel.automations:
                     dpg.bind_item_theme(get_automation_button_tag(automation), "selected_preset.theme" if channel.active_automation == automation else "not_selected_preset.theme")
 
@@ -2220,10 +2222,14 @@ class Gui:
             with dpg.table(tag="all_automation.table"):
 
                 for channel in clip.inputs:
+                    if not isinstance(channel, model.AutomatableSourceNode):
+                        continue
                     dpg.add_table_column(label=channel.name)
 
                 with dpg.table_row():
                     for channel in clip.inputs:
+                        if not isinstance(channel, model.AutomatableSourceNode):
+                            continue
                         with dpg.table_cell():
                             with dpg.group(horizontal=True):
                                 dpg.add_button(label="1", callback=self.default_time_callback, user_data=channel)
@@ -2860,7 +2866,7 @@ class Gui:
         return dst_channels
 
     def update_gui_from_state(self):
-        dpg.configure_item("play_button", label="[Pause]" if self.state.playing else "[Play]")
+        dpg.configure_item("play_button", label="[Playing]" if self.state.playing else "[Paused]")
 
         # Cache the active clip, since it can change while this function is running
         c_active_clip = self._active_clip

@@ -606,9 +606,10 @@ class FunctionFactory:
     def __init__(self):
         self._functions = {}
 
-    def get(self, cls):
-        id_hash = hash(stack()[2].positions)
+    def get(self, cls, key=None):
+        id_hash = key or hash(stack()[2].positions)
         if id_hash not in self._functions:
+            logger.debug(f"Creating new {cls.__name__}(key={key}), id_hash={id_hash}")
             self._functions[id_hash] = cls()
         return self._functions[id_hash]
 
@@ -692,7 +693,8 @@ class FunctionSequencer(FunctionNode):
 """
 
 def Scale(x, in_min, in_max, out_min, out_max):
-    return (((x - in_min)/(in_max - in_min))*(out_max-out_min)) + out_min
+    value = (((x - in_min)/(in_max - in_min))*(out_max-out_min)) + out_min
+    return clamp(value, out_min, out_max)
 
 
 def Demux(select, value, outputs):
@@ -875,7 +877,7 @@ class FunctionDelay:
         self._delay = 0
         self._buffer = []
         self._last_time = 0
-        self._last_value = 0
+        self._last_value = None
 
     def get_n(self):
         return int(self._delay * 60 )
@@ -883,17 +885,19 @@ class FunctionDelay:
     def transform(self, cur_value, delay):
         self._delay = delay
 
-        #if (time.time() - self._last_time) < (1/60.):
-        #    # Don't update.
-        #    return self._last_value
-
         n = self.get_n()
         n_buf = len(self._buffer)
         
+        if self._last_value is None:
+            if isinstance(cur_value, (int, float)):
+                self._last_value = 0
+            elif isinstance(cur_value, (list, tuple)):
+                self._last_value = [0] * len(cur_value)
+
         if n <= 0:
             return cur_value
         elif n_buf != n:
-            if isinstance(cur_value, list):
+            if isinstance(cur_value, (list, tuple)):
                 reset_value = [0] * len(cur_value)
             else:
                 reset_value = 0
@@ -915,23 +919,40 @@ def Delay(value, delay):
 
 
 class FunctionDecay:
+    RATE = 1/64 # beats
     def __init__(self):
-        self.value = 0
+        self.value = None
+        self._last_time = 0
 
     def transform(self, value, decay_amount):
-        if value >= self.value:
-            self.value = value
+        if self.value is None:
+            if isinstance(value, (list, tuple)):
+                self.value = [0] * len(value)
+            else:
+                self.value = [0]
+        
+        if ((_STATE.time_since_start_beat - self._last_time) < self.RATE) and (_STATE.time_since_start_beat >= self._last_time):
+            return self.value[0] if len(self.value) == 1 else self.value
         else:
-            self.value *= decay_amount
+            self._last_time = _STATE.time_since_start_beat 
 
-        if self.value <= 0:
-            self.value = 0
+        if isinstance(value, (int, float)):
+            value = [value]
 
-        return self.value
+        for i, v in enumerate(value):
+            if v >= self.value[i]:
+                self.value[i] = v
+            else:
+                self.value[i] *= decay_amount
+
+            if self.value[i] <= 0:
+                self.value[i] = 0
+
+        return self.value[0] if len(self.value) == 1 else self.value
 
 
-def Decay(value, decay_amount):
-    obj = FUNCTION_FACTORY.get(FunctionDecay)
+def Decay(value, decay_amount, key=None):
+    obj = FUNCTION_FACTORY.get(FunctionDecay, key)
     return obj.transform(value, decay_amount)
 
 
@@ -942,9 +963,9 @@ class FunctionDelayBeats(FunctionDelay):
         return int(time_s * 60)
 
 
-def DelayBeats(value, decay_amount):
+def DelayBeats(value, delay_amount):
     obj = FUNCTION_FACTORY.get(FunctionDelayBeats)
-    return obj.transform(value, decay_amount)
+    return obj.transform(value, delay_amount)
 
 
 def NormMult(values, factor):
@@ -2219,7 +2240,7 @@ class ProgramState(Identifier):
                 return Result(False)
             input_channel = self.get_obj(input_id)
             value = cast[input_channel.dtype](value)
-            input_channel.set(value)
+            input_channel.ext_set(value)
             return Result(True)
 
         elif cmd == "delete_automation_point":
