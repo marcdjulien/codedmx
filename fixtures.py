@@ -70,7 +70,7 @@ def parse_fixture(filepath):
 				elif line.startswith("address:"):
 					raise RuntimeError("Invalid fixture file")
 				else:
-					channels.append(line)
+					channels.append(line.strip().lower().replace(" ", "_"))
 
 		if name and address and channels:
 			logger.info("Successfully loaded %s", name)
