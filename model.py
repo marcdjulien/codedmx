@@ -2132,9 +2132,9 @@ class ProgramState(Identifier):
             clip_id = toks[3]
 
             new_track = self.tracks[int(new_track_i)]
-            new_track_ptr = f"*track[{new_track_i}]"
             old_clip = self.get_obj(clip_id)
             new_clip = self.duplicate_obj(old_clip)
+            new_clip.code.save(old_clip.code.read())
             new_track[new_clip_i] = new_clip
             return Result(True, new_clip)
 

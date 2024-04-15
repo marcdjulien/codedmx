@@ -7,7 +7,7 @@ import mido
 import re
 
 import model
-import util 
+import util
 import functions
 import fixtures
 
@@ -392,13 +392,15 @@ class CreateNewClip(GuiAction):
 
 
 class PasteClip(GuiAction):
+
     def execute(self):
         track_i = self.params["track_i"]
         clip_i = self.params["clip_i"]
-        self.paste_clip(track_i, clip_i)
+        APP.paste_clip(track_i, clip_i)
 
 
 class ShowTrackProperties(GuiAction):
+
     def execute(self):
         # Hide all track config windows
         for track in self.state.tracks:
@@ -589,7 +591,7 @@ class ResettableWindow(Window):
         self.kwargs["width"] = self.width
         self.kwargs["height"] = self.height
 
-        if show is not None:        
+        if show is not None:
             self.kwargs["show"] = show
 
         super()._create()
@@ -1036,7 +1038,6 @@ class HelpWindow(ResettableWindow):
 
         def add_text(text):
             dpg.add_text(default_value=text)
-            #dpg.bind_item_theme(dpg.last_item(), "header.theme")
 
         with self.window:
             if APP._active_clip is not None:
@@ -1207,7 +1208,7 @@ class SaveNewGlobalPerformancePresetWindow(ResettableWindow):
                 name = dpg.get_value("global_preset.name")
                 result = APP.execute_wrapper(
                     f"add_global_preset {','.join(global_presets)} {name}"
-                )   
+                )
                 if result.success:
                     dpg.configure_item(item=self.tag, show=False)
                     APP.global_performance_preset_window.reset()
@@ -1472,6 +1473,16 @@ class ClipWindow(FixedWindow):
 
 class ConsoleWindow(FixedWindow):
     def __init__(self, state):
+        self.current_log = state.log
+
+        with dpg.theme(tag="clear_button.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(
+                    dpg.mvThemeCol_Button,
+                    (255, 0, 0, 50),
+                    category=dpg.mvThemeCat_Core,
+                )
+
         super().__init__(
             state,
             tag="console.gui.window",
@@ -1481,7 +1492,7 @@ class ConsoleWindow(FixedWindow):
             height=SCREEN_HEIGHT - 520,
             no_resize=True,
         )
-        self.current_log = self.state.log
+
 
     def create(self):
         with self.window:
@@ -1490,6 +1501,7 @@ class ConsoleWindow(FixedWindow):
                 def clear_errors():
                     self.current_log.clear()
                 dpg.add_button(label="Clear", callback=clear_errors)
+                dpg.bind_item_theme(dpg.last_item(), "clear_button.theme")
 
                 def show_debug():
                     self.current_log = self.state.log
@@ -1507,7 +1519,7 @@ class ConsoleWindow(FixedWindow):
 
     def update(self):
         console_text = "\n".join(str(e) for e in self.current_log[::-1])
-        dpg.set_value("io_debug.text", console_text)   
+        dpg.set_value("io_debug.text", console_text)
 
 
 class CodeWindow(FixedWindow):

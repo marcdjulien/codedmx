@@ -1,5 +1,6 @@
 """
 TODO:
+    * Copy/paste bugs
     * Convert remaining windows to objects
     * Sequence editing, deleting, reordering
     * Preset editing
@@ -1410,14 +1411,10 @@ class Application:
         dpg.delete_item(node_tag)
 
     def copy_selected(self):
-        window_tag_alias = dpg.get_item_alias(dpg.get_active_window())
-        if window_tag_alias is None:
-            return
-
         new_copy_buffer = []
 
         # Copying from Node Editor
-        if window_tag_alias.endswith("node_window"):
+        if self._active_clip is not None:
             node_editor_tag = get_node_editor_tag(self._active_clip)
             for item in dpg.get_selected_nodes(node_editor_tag):
                 alias = dpg.get_item_alias(item)
@@ -1435,11 +1432,7 @@ class Application:
             self.copy_buffer = new_copy_buffer
 
     def paste_selected(self):
-        window_tag_alias = dpg.get_item_alias(dpg.get_active_window())
-        if window_tag_alias is None:
-            return
-
-        if "node_window" in window_tag_alias:
+        if self._active_clip is not None:
             for obj in self.copy_buffer:
                 if isinstance(obj, model.SourceNode):
                     result = self.execute_wrapper(
@@ -1461,9 +1454,9 @@ class Application:
                 else:
                     raise RuntimeError(f"Failed to duplicate {obj.id}")
 
-        elif window_tag_alias == "clip.gui.window":
-            if self._active_clip_slot is not None:
-                self.paste_clip(self._active_clip_slot[0], self._active_clip_slot[1])
+
+        if self._active_clip_slot is not None:
+            self.paste_clip(self._active_clip_slot[0], self._active_clip_slot[1])
 
     def paste_clip(self, track_i, clip_i):
         # TODO: Prevent copy/pasting clips across different tracks (outputs wont match)
@@ -2212,10 +2205,13 @@ class Application:
                     user_data=obj,
                 )
 
+                def delete(sender, app_data, user_data):
+                    clip, obj = user_data
+                    self.delete_node(clip, obj)
                 dpg.add_menu_item(
                     label="Delete",
-                    callback=self.delete_selected_nodes_callback,
-                    user_data=clip,
+                    callback=delete,
+                    user_data=(clip, obj)
                 )
 
     def create_node_menu(self, parent, clip):
@@ -2263,14 +2259,26 @@ class Application:
                 user_data=("create", (clip, "button"), right_click_menu),
             )
 
-        def paste():
-            self.paste_selected()
-            dpg.configure_item(parent, show=False)
+        with dpg.menu(parent=parent, label="Edit"):
+            dpg.add_menu_item(
+                label="Copy",
+                callback=self.copy_selected,
+            )
 
-        dpg.add_menu_item(
-            label="Paste",
-            callback=paste,
-        )
+            def paste():
+                self.paste_selected()
+                dpg.configure_item(parent, show=False)
+
+            dpg.add_menu_item(
+                label="Paste",
+                callback=paste,
+            )
+
+            dpg.add_menu_item(
+                label="Delete",
+                callback=self.delete_selected_nodes_callback,
+                user_data=clip,
+            )
 
 
     def create_properties_window(self, clip, obj):
@@ -2842,6 +2850,13 @@ class Application:
                 self._delete_node_gui(alias, node_id)
             else:
                 RuntimeError(f"Failed to delete: {node_id}")
+
+    def delete_node(self, clip, obj):
+        result = self.execute_wrapper(f"delete_node {clip.id} {obj.id}")
+        if result.success:
+            self._delete_node_gui(get_node_tag(clip, obj), obj.id)
+        else:
+            RuntimeError(f"Failed to delete: {node_id}")
 
     def update_parameter_buffer_callback(self, sender, app_data, user_data):
         parameter, parameter_index = user_data
