@@ -301,6 +301,7 @@ class SourceNode(Parameterized):
         self.name = kwargs.get("name", "")
         self.channel = Channel(**kwargs)
         self.input_type = None
+        self.is_constant = True
 
     def update(self, clip_beat):
         pass
@@ -364,6 +365,7 @@ class AutomatableSourceNode(SourceNode):
         self.active_automation = None
         self.speed = 0
         self.last_beat = 0
+        self.is_constant = False
 
     def update(self, clip_beat):
         if self.active_automation is None:
@@ -583,20 +585,12 @@ class ColorNode(SourceNode):
         kwargs.setdefault("size", 3)
         super().__init__(**kwargs)
         self.input_type = "color"
-        self.int_out_parameter = Parameter("Int", value=False, dtype="bool")
-        self.add_parameter(self.int_out_parameter)
 
     def set(self, value):
-        if self.int_out_parameter.value:
-            value = [int(255 * v) for v in value]
         self.channel.set(value)
 
     def update_parameter(self, index, value):
-        if self.parameters[index] == self.int_out_parameter:
-            self.parameters[index].value = value.lower() == "true"
-            return True
-        else:
-            return super().update_parameter(index, value)
+        return super().update_parameter(index, value)
 
 
 class ButtonNode(SourceNode):
@@ -863,8 +857,11 @@ class ClipPreset(Identifier):
     def execute(self):
         for i, preset in enumerate(self.presets):
             channel, automation, speed = preset
-            channel.set_active_automation(automation)
-            channel.speed = speed
+            if channel.is_constant:
+                channel.set(automation)
+            else:
+                channel.set_active_automation(automation)
+                channel.speed = speed
 
     def update(self, preset_name, presets):
         self.name = preset_name
@@ -876,7 +873,7 @@ class ClipPreset(Identifier):
             {
                 "name": self.name,
                 "presets": [
-                    (channel.id, automation.id, speed)
+                    (channel.id, automation if channel.is_constant else automation.id, speed)
                     for channel, automation, speed in self.presets
                 ],
             }
@@ -888,8 +885,9 @@ class ClipPreset(Identifier):
         self.name = data["name"]
         for preset_data in data["presets"]:
             channel_id, automation_id, speed = preset_data
+            channel = UUID_DATABASE[channel_id]
             self.presets.append(
-                (UUID_DATABASE[channel_id], UUID_DATABASE[automation_id], speed)
+                (channel, automation_id if channel.is_constant else UUID_DATABASE[automation_id], speed)
             )
 
 
@@ -930,6 +928,34 @@ class GlobalClipPreset(Identifier):
                     UUID_DATABASE[preset_id],
                 )
             )
+
+
+# TODO: Finish implementation
+class Trigger(Identifier):
+    """Triggers can be used to map aribitrary inputs to program commands."""
+
+    def __init__(self, name, event, command):
+        self.name = name
+        self.event = event
+        self.command = command
+
+    def test(self, event):
+        return self.event == event
+
+    def run(self):
+        STATE.log.append(f"Trigger Fired! {self.name}: {self.event} {self.command}")
+        STATE.execute(self.command)
+
+
+class TriggerManager:
+
+    def __init__(self):
+        self.triggers = []
+
+    def fire_triggers(self, event):
+        for trigger in self.triggers:
+            if trigger.test(event):
+                trigger.run()
 
 
 class Code:
@@ -1001,7 +1027,7 @@ class Code:
 
 
 class Clip(Identifier):
-    def __init__(self, outputs=[]):
+    def __init__(self, outputs=[], global_clip=False):
         super().__init__()
         self.name = ""
 
@@ -1009,11 +1035,10 @@ class Clip(Identifier):
         self.outputs = outputs
         self.presets = []
 
-        # Speed to play clip
+        self.global_clip = global_clip
+
         self.speed = 0
-
         self.time = 0
-
         self.playing = False
 
         self.code = Code(self.id)
@@ -1052,12 +1077,23 @@ class Clip(Identifier):
                 output.name: output for output in self.outputs if not output.deleted
             }
             try:
+                if self.global_clip:
+                    self.run_global_code()
                 self.code.run(global_code, track_code, inputs, outputs)
             except Exception as e:
                 logger.warning("Failed to execute: %s", self.code.file_path_name)
                 logger.warning(e)
                 STATE.log.append(traceback.format_exc())
                 self.stop()
+
+    def run_global_code(self):
+        """Runs the code special to Global Clips.
+
+        Includes:
+            - Adding all inputs to GlobalStorage
+        """
+        for input_ in self.inputs:
+            GlobalStorage.set(input_.name, CodeEditorChannel(input_))
 
     def start(self, restart=True):
         self.code.reload()
@@ -1099,6 +1135,7 @@ class Clip(Identifier):
                 "presets": [
                     preset.serialize() for preset in self.presets if not preset.deleted
                 ],
+                "global_clip": self.global_clip,
             }
         )
 
@@ -1114,6 +1151,8 @@ class Clip(Identifier):
         ]
         self.code = Code(self.id)
         self.code.reload()
+
+        self.global_clip = data.get("global_clip", False)
 
         for input_data in data["inputs"]:
             if input_data["input_type"] in cast.keys():
@@ -1191,7 +1230,7 @@ class Sequence(Identifier):
 
 
 class Track(Identifier):
-    def __init__(self, name="", n_clips=20):
+    def __init__(self, name="", n_clips=20, global_track=False):
         super().__init__()
         self.name = name
         self.clips = [None] * n_clips
@@ -1199,6 +1238,7 @@ class Track(Identifier):
         self.code = Code(self.id)
         self.sequences = []
         self.sequence = None
+        self.global_track = global_track
 
     def update(self, global_code, beat):
         if self.sequence is not None:
@@ -1274,6 +1314,7 @@ class Track(Identifier):
                 "clips": [clip.serialize() if clip else None for clip in self.clips],
                 "sequences": [sequence.serialize() for sequence in self.sequences],
                 "outputs": [],
+                "global_track": self.global_track,
             }
         )
 
@@ -1292,6 +1333,8 @@ class Track(Identifier):
         self.name = data["name"]
         n_clips = len(data["clips"])
         self.clips = [None] * n_clips
+
+        self.global_track = data.get("global_track", False)
 
         for output_type, output_data in data["outputs"]:
             if output_type == "single":
@@ -1452,6 +1495,7 @@ class OscServerInput(IO):
         def func(endpoint, value):
             STATE.osc_log.append(f"Recieved: {endpoint} = {value}")
             input_channel.ext_set(value)
+            TRIGGERS.fire_triggers((endpoint, value))
             self.update_io_time()
 
         self.dispatcher.map(endpoint, func)
@@ -1571,6 +1615,7 @@ class MidiInputDevice(IO):
     def callback(self, message):
         global LAST_MIDI_MESSAGE
         LAST_MIDI_MESSAGE = (self.device_name, message)
+        STATE.midi_log.append(f"Received {message} on {self.device_name}")
         midi_channel = message.channel
         note_control, value = midi_value(message)
         if (
@@ -1579,6 +1624,8 @@ class MidiInputDevice(IO):
         ):
             for channel in self.channel_map[midi_channel][note_control]:
                 channel.ext_set(value)
+
+        TRIGGERS.fire_triggers((midi_channel, note_control, value))
         self.update_io_time()
 
     def serialize(self):
@@ -1723,8 +1770,9 @@ class ProgramState(Identifier):
         self.project_folder_path = None
         self.tracks = []
 
-        for i in range(N_TRACKS):
+        for i in range(N_TRACKS - 1):
             self.tracks.append(Track(f"Track {i}"))
+        self.tracks.append(Track(f"Global", global_track=True))
 
         self.io_outputs = [None] * 5
         self.io_inputs = [None] * 5
@@ -1991,7 +2039,7 @@ class ProgramState(Identifier):
             presets = []
             for preset_info in all_preset_info:
                 channel = self.get_obj(preset_info["channel"])
-                automation = self.get_obj(preset_info["automation"])
+                automation = preset_info["automation"] if channel.is_constant else self.get_obj(preset_info["automation"])
                 speed = preset_info["speed"]
                 presets.append((channel, automation, speed))
 
@@ -2042,6 +2090,16 @@ class ProgramState(Identifier):
             else:
                 track.sequences.append(Sequence(name, sequence_info))
             return Result(True)
+
+        elif cmd == "add_trigger":
+            data_string = " ".join(toks[1::])
+            data = json.loads(data_string)
+
+            name = data["name"]
+            event = data["event"]
+            command = data["command"]
+            new_trigger = Trigger(name, event, command)
+            self.triggers.append(new_trigger)
 
         elif cmd == "add_automation_point":
             automation_id = toks[1]
@@ -2178,11 +2236,21 @@ class ProgramState(Identifier):
         elif cmd == "midi_map":
             obj_id = toks[1]
             obj = self.get_obj(obj_id)
-            dp = obj.get_parameter("device")
             device_name = obj.get_parameter("device").value
             id_ = obj.get_parameter("id").value
             midi_channel, note_control = id_.split("/")
             global_midi_control(device_name, "in").map_channel(
+                int(midi_channel), int(note_control), obj
+            )
+            return Result(True)
+
+        elif cmd == "update_midi_device":
+            obj_id = toks[1]
+            new_device_name = toks[2]
+            obj = self.get_obj(obj_id)
+            id_ = obj.get_parameter("id").value
+            midi_channel, note_control = id_.split("/")
+            global_midi_control(new_device_name, "in").map_channel(
                 int(midi_channel), int(note_control), obj
             )
             return Result(True)
@@ -2231,6 +2299,7 @@ ALL_OUTPUT_TYPES = [
 ]
 
 STATE = None
+TRIGGERS = TriggerManager()
 GlobalStorage = GlobalCodeStorage()
 
 # Weird hack.

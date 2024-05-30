@@ -1,5 +1,6 @@
 """
 TODO:
+    * Add presets for non automatable channels
     * Copy/paste bugs
     * Convert remaining windows to objects
     * Sequence editing, deleting, reordering
@@ -13,7 +14,7 @@ TODO:
 
 """
 import dearpygui.dearpygui as dpg
-
+import math
 import time
 import re
 from threading import RLock, Thread
@@ -418,24 +419,33 @@ class Application:
         for track_i, track in enumerate(self.state.tracks):
             for clip_i, clip in enumerate(track.clips):
                 clip_color = [0, 0, 0, 100]
+
                 if self._active_clip_slot == (track_i, clip_i):
                     clip_color[2] += 155
+
                 if util.valid(clip) and clip == self._active_clip:
                     clip_color[2] += 255
+
                 if util.valid(clip) and clip.playing:
                     clip_color[1] += 255
+
                 if util.valid(clip) and not clip.playing:
                     clip_color[2] += 100
                     clip_color[1] += 50
+
                 if not util.valid(clip):
-                    clip_color[0] = 50
-                    clip_color[1] = 50
-                    clip_color[2] = 50
+                    if track.global_track:
+                        clip_color[0:3] = 70, 70, 50
+                    else:
+                        clip_color[0:3] = 50, 50, 50
+
                 if self._active_clip_slot == (track_i, clip_i):
                     clip_color[3] += 50
+
                 dpg.highlight_table_cell(
                     "clip_window.table", clip_i + 1, track_i, color=clip_color
                 )
+
             if self._active_track == track:
                 dpg.highlight_table_column(
                     "clip_window.table", track_i, color=[100, 100, 100, 255]
@@ -830,15 +840,10 @@ class Application:
         if input_type == "color":
 
             def update_color(sender, app_data, user_data):
-                # Update the Channel value
-                self.update_channel_value_callback(sender, app_data, user_data)
-
-                # Update the node's color
-                rgb = [util.clamp(v * 255, 0, 255) for v in app_data]
-                node_theme = get_node_tag(clip, input_channel) + ".theme"
-                dpg.configure_item(f"{node_theme}.color1", value=rgb)
-                dpg.configure_item(f"{node_theme}.color2", value=rgb)
-                dpg.configure_item(f"{node_theme}.color3", value=rgb)
+                # Color picker returns values between 0 and 1. Convert
+                # to 255 int value.
+                rgb = [int(util.clamp(v * 255, 0, 255)) for v in app_data]
+                self.update_channel_value_callback(sender, rgb, user_data)
 
             width = 520
             height = 520
@@ -881,6 +886,7 @@ class Application:
                     callback=update_color,
                     user_data=input_channel,
                     default_value=default_color,
+                    display_type=dpg.mvColorEdit_uint8,
                 )
 
         # ButtonNode
@@ -1387,7 +1393,10 @@ class Application:
         starting_address = fixture.address
 
         for output_channel in track.outputs:
-            starting_address = max(starting_address, output_channel.dmx_address + 1)
+            if isinstance(output_channel, model.DmxOutputGroup):
+                starting_address = max(starting_address, output_channel.outputs[-1].dmx_address + 1)
+            else:
+                starting_address = max(starting_address, output_channel.dmx_address + 1)
 
         self.create_track_output_group(
             None,
@@ -1552,6 +1561,13 @@ class Application:
             for src_channel in self.get_all_valid_node_src_channels(c_active_clip):
                 tag = f"{src_channel.id}.value"
                 dpg.set_value(tag, src_channel.get())
+                if src_channel.input_type == "color":
+                    # Update the node's color
+                    node_theme = get_node_tag(c_active_clip, src_channel) + ".theme"
+                    rgb = src_channel.get()
+                    dpg.configure_item(f"{node_theme}.color1", value=rgb)
+                    dpg.configure_item(f"{node_theme}.color2", value=rgb)
+                    dpg.configure_item(f"{node_theme}.color3", value=rgb)
 
         # Update automation points
         if (
@@ -1705,7 +1721,7 @@ class Application:
                         {
                             "channel": channel.id,
                             "automation": self._clip_preset_buffer[channel.id],
-                            "speed": dpg.get_value(f"preset.{i}.speed"),
+                            "speed": None if channel.is_constant else dpg.get_value(f"preset.{i}.speed"),
                         }
                     )
 
@@ -1737,6 +1753,11 @@ class Application:
             self._clip_preset_buffer[channel.id] = automation.id
             dpg.configure_item(f"{channel.id}.select_preset_bar", label=automation.name)
 
+        def set_value(sender, app_data, user_data):
+            channel = user_data
+            value = app_data
+            self._clip_preset_buffer[channel.id] = value
+
         with dpg.window(
             tag=preset_window_tag, modal=True, width=600, height=500, no_move=True
         ):
@@ -1754,12 +1775,12 @@ class Application:
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Channel")
-                    dpg.add_text(default_value="Preset")
+                    dpg.add_text(default_value="Preset/Value")
                     dpg.add_text(default_value="Speed (2^n)")
                     dpg.add_text(default_value="Include")
 
                 preset_data = {}
-                speed_data = {}
+
                 if editing:
                     preset_data = {
                         channel.id: (automation, speed)
@@ -1767,38 +1788,71 @@ class Application:
                     }
 
                 for i, channel in enumerate(clip.inputs):
-                    # TODO: Include constants in presets
-                    if not isinstance(channel, model.AutomatableSourceNode):
-                        continue
 
                     with dpg.table_row():
+                        # Name column
                         dpg.add_text(default_value=channel.name)
 
-                        with dpg.menu(
-                            tag=f"{channel.id}.select_preset_bar", label="Select Preset"
-                        ):
-                            for automation in channel.automations:
-                                dpg.add_menu_item(
-                                    label=automation.name,
-                                    callback=set_automation,
-                                    user_data=(channel, automation),
+                        # Preset/Value column
+                        if channel.is_constant:
+                            kwargs = {}
+                            if channel.dtype == "any":
+                                add_func = dpg.add_input_text
+                            elif channel.size == 1:
+                                add_func = (
+                                    dpg.add_input_float
+                                    if channel.dtype == "float"
+                                    else dpg.add_input_int
                                 )
+                            else:
+                                add_func = dpg.add_drag_floatx
+                                kwargs["size"] = channel.size
+                            add_func(
+                                width=90,
+                                default_value=channel.get(),
+                                callback=set_value,
+                                user_data=channel,
+                                **kwargs,
+                            )
+
+                        else:
+                            with dpg.menu(
+                                tag=f"{channel.id}.select_preset_bar", label="Select Preset"
+                            ):
+                                for automation in channel.automations:
+                                    dpg.add_menu_item(
+                                        label=automation.name,
+                                        callback=set_automation,
+                                        user_data=(channel, automation),
+                                    )
+
                         if channel.id in preset_data:
-                            set_automation(
-                                None, None, (channel, preset_data[channel.id][0])
-                            )
-                        elif util.valid(channel.active_automation):
-                            set_automation(
-                                None, None, (channel, channel.active_automation)
+                            if channel.is_constant:
+                                set_value(None, preset_data[channel.id][0], channel)
+                            else:
+                                set_automation(
+                                    None, None, (channel, preset_data[channel.id][0])
+                                )
+                        else:
+                            if channel.is_constant:
+                                set_value(None, channel.get(), channel)
+                            elif util.valid(channel.active_automation):
+                                set_automation(
+                                    None, None, (channel, channel.active_automation)
+                                )
+
+                        # Speed column
+                        if channel.is_constant:
+                            dpg.add_text(label="")
+                        else:
+                            dpg.add_input_int(
+                                tag=f"preset.{i}.speed",
+                                default_value=preset_data[channel.id][1]
+                                if channel.id in preset_data
+                                else channel.speed,
                             )
 
-                        dpg.add_input_int(
-                            tag=f"preset.{i}.speed",
-                            default_value=preset_data[channel.id][1]
-                            if channel.id in preset_data
-                            else channel.speed,
-                        )
-
+                        # Include column
                         dpg.add_checkbox(
                             tag=f"preset.{i}.include",
                             default_value=channel.id in preset_data,
@@ -2935,20 +2989,24 @@ class Application:
         if util.valid(self._active_input_channel):
             self.reset_automation_plot(self._active_input_channel)
 
-        # Reset last button
-        if (
-            self._last_selected_preset_button_tag is not None
-            and self._last_selected_preset_theme_tag is not None
-        ):
-            dpg.bind_item_theme(
-                self._last_selected_preset_button_tag,
-                self._last_selected_preset_theme_tag,
-            )
+        # This will only exist if the user has opened the "Presets Performance Window"
+        preset_button_tag = get_preset_button_tag(preset)
+        if dpg.does_item_exist(preset_button_tag):
+            # Reset last button
+            if (
+                self._last_selected_preset_button_tag is not None
+                and self._last_selected_preset_theme_tag is not None
+            ):
+                dpg.bind_item_theme(
+                    self._last_selected_preset_button_tag,
+                    self._last_selected_preset_theme_tag,
+                )
 
-        # Set new button theme
-        self._last_selected_preset_button_tag = get_preset_button_tag(preset)
-        self._last_selected_preset_theme_tag = get_channel_preset_theme(preset)
-        dpg.bind_item_theme(get_preset_button_tag(preset), "selected_preset.theme")
+            # Set new button theme
+            self._last_selected_preset_button_tag = preset_button_tag
+            self._last_selected_preset_theme_tag = get_channel_preset_theme(preset)
+
+            dpg.bind_item_theme(preset_button_tag, "selected_preset.theme")
 
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
