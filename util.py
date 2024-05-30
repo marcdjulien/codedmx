@@ -1,3 +1,4 @@
+import math
 def clamp(x, min_value, max_value):
     return min(max(min_value, x), max_value)
 
