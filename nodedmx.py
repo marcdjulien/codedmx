@@ -267,6 +267,8 @@ class Application:
         self.save_new_global_performance_preset_window = gui.SaveNewGlobalPerformancePresetWindow(self.state)
         self.global_performance_preset_window = gui.GlobalPerformancePresetWindow(self.state)
         self.clip_automation_presets_window = gui.ClipAutomationPresetWindow(self.state)
+        self.add_new_trigger_window = gui.AddNewTriggerWindow(self.state)
+        self.manage_trigger_window = gui.ManageTriggerWindow(self.state)
 
         #### Help Window ####
         self.help_window = gui.HelpWindow(self.state)
@@ -2602,6 +2604,14 @@ class Application:
                 dpg.add_menu_item(label="Save", callback=self.save_menu_callback)
                 dpg.add_menu_item(label="Save As", callback=self.save_as_menu_callback)
 
+            #### Edit menu ####
+            with dpg.menu(label="Edit"):
+                dpg.add_menu_item(
+                    label="Triggers",
+                    callback=self.action_callback,
+                    user_data=gui.ShowWindow(self.manage_trigger_window),
+                )
+
             #### View menu ####
             with dpg.menu(label="View"):
                 dpg.add_menu_item(
@@ -2620,6 +2630,7 @@ class Application:
                         callback=self.action_callback,
                         user_data=gui.ShowWindow(self.global_storage_debug_window),
                     )
+
 
             #### Performance menu ####
             with dpg.menu(label="Performance"):
