@@ -930,12 +930,20 @@ class GlobalClipPreset(Identifier):
             )
 
 
-# TODO: Finish implementation
 class Trigger(Identifier):
     """Triggers can be used to map aribitrary inputs to program commands."""
 
-    def __init__(self, name, event, command):
+    def __init__(self, name, type_, event, command):
+        """Constructor.
+
+        Args:
+            name (str): The name of the Trigger.
+            type (str): The type of the event to fire the Trigger ("midi", "osc", or "key").
+            event (tuple): Tuple of the event (e.g, midi node and value, osc, etc.).
+            command (str): The command to execute when the event is met.
+        """
         self.name = name
+        self.type = type_
         self.event = event
         self.command = command
 
@@ -952,9 +960,12 @@ class TriggerManager:
     def __init__(self):
         self.triggers = []
 
-    def fire_triggers(self, event):
+    def add_trigger(self, trigger):
+        self.triggers.append(trigger)
+
+    def fire_triggers(self, type_, event):
         for trigger in self.triggers:
-            if trigger.test(event):
+            if type_ == trigger.type and trigger.test(event):
                 trigger.run()
 
 
@@ -1495,7 +1506,8 @@ class OscServerInput(IO):
         def func(endpoint, value):
             STATE.osc_log.append(f"Recieved: {endpoint} = {value}")
             input_channel.ext_set(value)
-            TRIGGERS.fire_triggers((endpoint, value))
+            if bool(value):
+                STATE.trigger_manager.fire_triggers("osc", (endpoint))
             self.update_io_time()
 
         self.dispatcher.map(endpoint, func)
@@ -1625,7 +1637,9 @@ class MidiInputDevice(IO):
             for channel in self.channel_map[midi_channel][note_control]:
                 channel.ext_set(value)
 
-        TRIGGERS.fire_triggers((midi_channel, note_control, value))
+        if value >= 127:
+            STATE.trigger_manager.fire_triggers("midi", (self.device_name, midi_channel, note_control))
+
         self.update_io_time()
 
     def serialize(self):
@@ -1789,6 +1803,8 @@ class ProgramState(Identifier):
         self.global_presets = []
         self.code = Code(GLOBAL_CODE_ID)
 
+        self.trigger_manager = TriggerManager()
+
         self.log = []
         self.osc_log = []
         self.midi_log = []
@@ -1909,6 +1925,7 @@ class ProgramState(Identifier):
         global MIDI_OUTPUT_DEVICES
 
         allowed_performance_commands = [
+            "toggle_play",
             "set_active_automation",
             "toggle_clip",
             "play_clip",
@@ -1926,7 +1943,10 @@ class ProgramState(Identifier):
             if cmd not in allowed_performance_commands:
                 return Result(False)
 
-        if cmd == "toggle_clip":
+        if cmd == "toggle_play":
+            self.toggle_play()
+            return Result(True)
+        elif cmd == "toggle_clip":
             track_id = toks[1]
             clip_id = toks[2]
             track = self.get_obj(track_id)
@@ -2096,10 +2116,24 @@ class ProgramState(Identifier):
             data = json.loads(data_string)
 
             name = data["name"]
-            event = data["event"]
+            type_ = data["type"].lower()
             command = data["command"]
-            new_trigger = Trigger(name, event, command)
-            self.triggers.append(new_trigger)
+
+            if type_.lower() == "midi":
+                device_name, toks = data["event"].split(",")
+                channel, note_control = toks.split("/")
+
+                device_name = device_name.strip()
+                channel = int(channel)
+                note_control = int(note_control)
+
+                event = (device_name, channel, note_control)
+
+            else:
+                event = data["event"]
+
+            self.trigger_manager.add_trigger(Trigger(name, type_, event, command))
+            return Result(True)
 
         elif cmd == "add_automation_point":
             automation_id = toks[1]
@@ -2299,7 +2333,6 @@ ALL_OUTPUT_TYPES = [
 ]
 
 STATE = None
-TRIGGERS = TriggerManager()
 GlobalStorage = GlobalCodeStorage()
 
 # Weird hack.

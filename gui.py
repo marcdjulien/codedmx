@@ -5,6 +5,7 @@ import textwrap
 import logging
 import mido
 import re
+import json
 
 import model
 import util
@@ -221,7 +222,7 @@ class CreateNewClip(GuiAction):
                 )
                 dpg.add_menu_item(
                     label="Paste",
-                    callback=self.app.action_callback,
+                    callback=action_callback,
                     user_data=PasteClip({"track_i": track_i, "clip_i": clip_i}),
                 )
 
@@ -566,6 +567,9 @@ class Window:
     @property
     def shown(self):
         return dpg.is_item_shown(self.tag)
+
+    def hide(self):
+        dpg.configure_item(self.tag, show=False)
 
 
 class FixedWindow(Window):
@@ -1270,7 +1274,188 @@ class SaveNewGlobalPerformancePresetWindow(ResettableWindow):
                         dpg.add_button(label="Cancel", callback=cancel)
 
 
-class ClipAutomationPresetwindow(ResettableWindow):
+class ManageTriggerWindow(ResettableWindow):
+
+    def __init__(self, state):
+        super().__init__(
+            state,
+            pos=(200, 100),
+            width=800,
+            height=800,
+            label=f"Triggers",
+            tag="manage_trigger.gui.window",
+            show=False,
+        )
+
+    def create(self):
+        with self.window:
+            dpg.add_button(
+                label="Add Trigger",
+                callback=action_callback,
+                user_data=ShowWindow(APP.add_new_trigger_window)
+            )
+
+            with dpg.table(tag="triggers.table"):
+
+                dpg.add_table_column(label="Name")
+                dpg.add_table_column(label="Event")
+                dpg.add_table_column(label="Command")
+                dpg.add_table_column(label="Edit")
+                dpg.add_table_column(label="Delete")
+
+                for trigger in self.state.trigger_manager.triggers:
+                    if not util.valid(trigger):
+                        continue
+
+                    with dpg.table_row():
+                        # Name
+                        dpg.add_text(default_value=trigger.name)
+
+                        # Event
+                        dpg.add_text(default_value=trigger.event)
+
+                        # Command
+                        dpg.add_text(default_value=trigger.command)
+
+                        # Edit
+                        dpg.add_button(label="Edit", callback=lambda:None)
+
+                        # Delete
+                        dpg.add_button(label="X", callback=lambda:None)
+
+
+class AddNewTriggerWindow(ResettableWindow):
+
+    def __init__(self, state):
+        super().__init__(
+            state,
+            pos=(300, 200),
+            width=600,
+            height=200,
+            label=f"New Trigger",
+            tag="new_trigger.gui.window",
+            show=False,
+        )
+
+    def create(self):
+        def save():
+            name = dpg.get_value("new_trigger.name")
+            type_ = dpg.get_value("new_trigger.type")
+            event = dpg.get_value("new_trigger.event")
+            command = dpg.get_value("new_trigger.command")
+
+            # TODO: Validate events and commands
+            assert name
+            assert type_
+            assert event
+            assert command
+
+            data = {
+                "name": name,
+                "type": type_,
+                "event": event,
+                "command": command,
+            }
+
+            result = APP.execute_wrapper(f"add_trigger {json.dumps(data)}")
+            if result.success:
+                self.hide()
+                dpg.set_value("new_trigger.name", "")
+                dpg.set_value("new_trigger.type", "MIDI")
+                dpg.set_value("new_trigger.event", "<device_name>, <channel>/<note>")
+                dpg.set_value("new_trigger.command", "")
+                APP.manage_trigger_window.reset()
+
+        def cancel():
+            self.hide()
+
+        with self.window:
+
+            def type_changed(sender, app_data, user_data):
+                if app_data == "MIDI":
+                    dpg.set_value(item="new_trigger.event", value="<device_name>, <channel>/<note>")
+                elif app_data == "OSC":
+                    dpg.set_value(item="new_trigger.event", value="<endpoint>")
+                elif app_data == "Key":
+                    dpg.set_value(item="new_trigger.event", value="<letter>")
+
+                dpg.configure_item("new_trigger.midi_learn", enabled=app_data == "MIDI")
+
+            with dpg.table(tag="new_trigger.table", header_row=False, policy=dpg.mvTable_SizingStretchProp):
+                dpg.add_table_column()
+                dpg.add_table_column()
+                dpg.add_table_column()
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Name")
+                    dpg.add_input_text(tag="new_trigger.name", width=400)
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Type")
+                    dpg.add_radio_button(tag="new_trigger.type", items=["MIDI", "OSC", "Key"], horizontal=True, callback=type_changed, default_value="MIDI")
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Event")
+                    dpg.add_input_text(tag="new_trigger.event", default_value="<device_name>, <channel>/<note>", width=400)
+                    dpg.add_button(tag="new_trigger.midi_learn", label="MIDI Learn", callback=self.create_and_show_learn_midi_map_window_callback)
+
+                with dpg.table_row():
+                    dpg.add_text(default_value="Command")
+                    dpg.add_input_text(tag="new_trigger.command", width=400)
+                    dpg.add_button(tag="new_trigger.command_learn", label="Command Learn", callback=self.enter_command_listen_mode)
+
+                with dpg.table_row(tag=f"new_trigger.table.save_cancel_row"):
+                    dpg.add_group()
+                    with dpg.group(horizontal=True):
+                        dpg.add_button(label="Save", callback=save)
+                        dpg.add_button(label="Cancel", callback=cancel)
+
+    def enter_command_listen_mode(self, sender, app_data, user_data):
+        APP.command_listening_mode = True
+        with dpg.theme() as button_theme:
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (255, 0, 0, 40), category=dpg.mvThemeCat_Core)
+
+        dpg.bind_item_theme("new_trigger.command_learn", button_theme)
+        dpg.configure_item(item="new_trigger.command_learn", label="Listening...")
+
+    def save_command(self, command):
+        APP.command_listening_mode = False
+        with dpg.theme() as button_theme:
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (100, 100, 100, 255), category=dpg.mvThemeCat_Core)
+
+        dpg.bind_item_theme("new_trigger.command_learn", button_theme)
+        dpg.configure_item(item="new_trigger.command_learn", label="Command Learn")
+
+        dpg.set_value(item="new_trigger.command", value=command)
+
+    def create_and_show_learn_midi_map_window_callback(self, sender, app_data, user_data):
+        try:
+            dpg.delete_item("new_trigger.midi_map_window")
+        except:
+            pass
+
+        def cancel(sender, app_data, user_data):
+            dpg.delete_item("new_trigger.midi_map_window")
+
+        def save(sender, app_data, user_data):
+            if model.LAST_MIDI_MESSAGE is not None:
+                device_name, message = model.LAST_MIDI_MESSAGE
+                note_control, value = model.midi_value(message)
+                dpg.set_value("new_trigger.event", f"{device_name}, {message.channel}/{note_control}")
+                dpg.delete_item("new_trigger.midi_map_window")
+
+        with dpg.window(
+            tag="new_trigger.midi_map_window", modal=True, width=300, height=300, no_move=True
+        ):
+            dpg.add_text("Incoming MIDI: ")
+            dpg.add_text(source="last_midi_message")
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Save", callback=save)
+                dpg.add_button(label="Cancel", callback=cancel)
+
+class ClipAutomationPresetWindow(ResettableWindow):
     def __init__(self, state):
         self.clip = None
         super().__init__(

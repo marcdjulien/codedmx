@@ -266,7 +266,7 @@ class Application:
         self.performance_preset_window = gui.PerformancePresetWindow(self.state)
         self.save_new_global_performance_preset_window = gui.SaveNewGlobalPerformancePresetWindow(self.state)
         self.global_performance_preset_window = gui.GlobalPerformancePresetWindow(self.state)
-        self.clip_automation_presets_window = gui.ClipAutomationPresetwindow(self.state)
+        self.clip_automation_presets_window = gui.ClipAutomationPresetWindow(self.state)
 
         #### Help Window ####
         self.help_window = gui.HelpWindow(self.state)
