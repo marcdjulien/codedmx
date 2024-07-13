@@ -6,6 +6,7 @@ import logging
 import mido
 import re
 import json
+import socket
 
 import model
 import util
@@ -143,7 +144,6 @@ class SelectClip(GuiAction):
 
 
 class SelectInputNode(GuiAction):
-
     def execute(self):
         clip = self.params["clip"]
         input_channel = self.params["channel"]
@@ -153,9 +153,7 @@ class SelectInputNode(GuiAction):
             dpg.configure_item(
                 get_source_node_window_tag(other_input_channel), show=False
             )
-        dpg.configure_item(
-            get_source_node_window_tag(input_channel), show=True
-        )
+        dpg.configure_item(get_source_node_window_tag(input_channel), show=True)
         APP._active_input_channel = input_channel
 
 
@@ -393,7 +391,6 @@ class CreateNewClip(GuiAction):
 
 
 class PasteClip(GuiAction):
-
     def execute(self):
         track_i = self.params["track_i"]
         clip_i = self.params["clip_i"]
@@ -401,7 +398,6 @@ class PasteClip(GuiAction):
 
 
 class ShowTrackProperties(GuiAction):
-
     def execute(self):
         # Hide all track config windows
         for track in self.state.tracks:
@@ -419,7 +415,6 @@ class ShowTrackProperties(GuiAction):
 
 
 class ShowWindow(GuiAction):
-
     def __init__(self, window):
         if isinstance(window, str):
             super().__init__({"window_tag": window})
@@ -583,6 +578,7 @@ class ResettableWindow(Window):
     Helpful for windows that depend on state from other items that frequently
     change.
     """
+
     def __init__(self, state, *args, **kwargs):
         self.position = kwargs.get("pos")
         self.width = kwargs.get("width")
@@ -704,6 +700,7 @@ class TrackPropertiesWindow(ResettableWindow):
                     user_data=("restore", self.track, output_channel),
                 )
 
+
 class RenameWindow(FixedWindow):
     def __init__(self, state):
         super().__init__(
@@ -719,6 +716,7 @@ class RenameWindow(FixedWindow):
 
     def create(self):
         with self.window:
+
             def set_name_property(sender, app_data, user_data):
                 if not re.match(VARIABLE_NAME_PATTERN, app_data):
                     return
@@ -744,7 +742,10 @@ class RenameWindow(FixedWindow):
                 dpg.configure_item(self.tag, show=False)
 
             dpg.add_input_text(
-                tag="rename_node.text", on_enter=True, callback=set_name_property, no_spaces=True
+                tag="rename_node.text",
+                on_enter=True,
+                callback=set_name_property,
+                no_spaces=True,
             )
 
 
@@ -783,6 +784,102 @@ class InspectorWindow(Window):
         )
 
 
+class GlobalStorageDebugWindow(ResettableWindow):
+    def __init__(self, state):
+        super().__init__(
+            state,
+            pos=(200, 100),
+            width=800,
+            height=800,
+            label=f"Global Storage Debug",
+            tag="global_storage_debug.gui.window",
+            show=False,
+        )
+
+    def create(self):
+        with self.window:
+            with dpg.table(
+                header_row=True,
+                policy=dpg.mvTable_SizingStretchProp,
+            ):
+                dpg.add_table_column(label="Variable")
+                dpg.add_table_column(label="Value")
+                for i, (name, value) in enumerate(model.GlobalStorage.items()):
+                    with dpg.table_row():
+                        dpg.add_text(name)
+                        dpg.add_text(value, tag=f"{self.tag}.{i}")
+
+                dpg.set_value(
+                    "n_global_storage_elements", len(model.GlobalStorage.items())
+                )
+
+
+class RemapMidiDeviceWindow(ResettableWindow):
+    def __init__(self, state):
+        super().__init__(
+            state,
+            pos=(200, 100),
+            width=800,
+            height=800,
+            label=f"Remap MIDI Device",
+            tag="remap_midi_device.gui.window",
+            show=False,
+        )
+        self.index_to_remap = None
+
+    def set_index_to_remap(self, index):
+        self.index_to_remap = index
+
+    def create(self):
+        def remap(sender, app_data, user_data):
+            assert self.index_to_remap is not None
+            new_device_name = user_data
+            data = {"index": self.index_to_remap, "new_device_name": new_device_name}
+
+            result = APP.execute_wrapper(f"remap_midi_device {json.dumps(data)}")
+
+            if result.success:
+                new_device = result.payload
+                APP.gui_state["io_args"]["inputs"][
+                    self.index_to_remap
+                ] = new_device.device_name
+                APP.io_window.create_io(
+                    None, None, ("restore", self.index_to_remap, new_device, "inputs")
+                )
+
+                for channel in APP.get_all_valid_clip_input_channels():
+                    if isinstance(channel, model.MidiInput):
+                        device_parameter_id = channel.get_parameter_id("device")
+                        id_parameter_id = channel.get_parameter_id("id")
+                        dpg.set_value(
+                            f"{device_parameter_id}.value",
+                            channel.get_parameter("device").value,
+                        )
+                        dpg.set_value(
+                            f"{id_parameter_id}.value",
+                            channel.get_parameter("id").value,
+                        )
+
+                self.index_to_remap = None
+                self.hide()
+
+        with self.window:
+            dpg.add_button(label="Refresh", callback=self.reset_callback)
+
+            with dpg.table(
+                header_row=True,
+                policy=dpg.mvTable_SizingStretchProp,
+            ):
+                dpg.add_table_column(label="Device Name")
+                dpg.add_table_column(label="")
+                for device_name in mido.get_input_names():
+                    with dpg.table_row():
+                        dpg.add_text(device_name)
+                        dpg.add_button(
+                            label="Remap", callback=remap, user_data=device_name
+                        )
+
+
 class IOWindow(Window):
     def __init__(self, state):
         super().__init__(
@@ -795,7 +892,32 @@ class IOWindow(Window):
             show=False,
         )
 
+    def create_io(self, sender, app_data, user_data):
+        arg = app_data
+        action = user_data[0]
+        if action == "create":
+            _, index, input_output = user_data
+            io_type = APP.gui_state["io_types"][input_output][index]
+            result = APP.execute_wrapper(
+                f"create_io {index} {input_output} {io_type} {arg}"
+            )
+            if not result.success:
+                raise RuntimeError("Failed to create IO")
+            io = result.payload
+            APP.gui_state["io_args"][input_output][index] = arg
+        else:  # restore
+            _, index, io, input_output = user_data
+
+        table_tag = f"io.{input_output}.table"
+        dpg.configure_item(f"{table_tag}.{index}.type", label=io.nice_title)
+        dpg.set_value(f"{table_tag}.{index}.arg", value=io.args)
+
     def create(self):
+        try:
+            ip_address = socket.gethostbyname(socket.gethostname())
+        except:
+            ip_address = "Unknown"
+
         with self.window:
             output_table_tag = f"io.outputs.table"
             input_table_tag = f"io.inputs.table"
@@ -814,27 +936,7 @@ class IOWindow(Window):
                     )
 
                 if args:
-                    create_io(None, args[0], ("create", index, input_output))
-
-            def create_io(sender, app_data, user_data):
-                arg = app_data
-                action = user_data[0]
-                if action == "create":
-                    _, index, input_output = user_data
-                    io_type = APP.gui_state["io_types"][input_output][index]
-                    result = APP.execute_wrapper(
-                        f"create_io {index} {input_output} {io_type} {arg}"
-                    )
-                    if not result.success:
-                        raise RuntimeError("Failed to create IO")
-                    io = result.payload
-                    APP.gui_state["io_args"][input_output][index] = arg
-                else:  # restore
-                    _, index, io = user_data
-
-                table_tag = f"io.{input_output}.table"
-                dpg.configure_item(f"{table_tag}.{index}.type", label=io.nice_title)
-                dpg.set_value(f"{table_tag}.{index}.arg", value=io.args)
+                    self.create_io(None, args[0], ("create", index, input_output))
 
             def connect(sender, app_data, user_data):
                 _, index, input_output = user_data
@@ -847,6 +949,8 @@ class IOWindow(Window):
                 table_tag = f"io.{input_output}.table"
                 dpg.configure_item(f"{table_tag}.{index}.type", label=io.nice_title)
                 dpg.set_value(f"{table_tag}.{index}.arg", value=io.args)
+
+            dpg.add_text(f"IP Address: {ip_address}")
 
             with dpg.table(
                 header_row=True,
@@ -898,16 +1002,29 @@ class IOWindow(Window):
                             default_value="",
                             tag=arg_tag,
                             on_enter=True,
-                            callback=create_io,
+                            callback=self.create_io,
                             user_data=("create", i, "inputs"),
                         )
 
                         connected_tag = f"{input_table_tag}.{i}.connected"
-                        dpg.add_button(
-                            label="Connect",
-                            callback=connect,
-                            user_data=("create", i, "inputs"),
-                        )
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(
+                                label="Connect",
+                                callback=connect,
+                                user_data=("create", i, "inputs"),
+                            )
+
+                            def remap(sender, app_data, user_data):
+                                APP.remap_midi_device_window.set_index_to_remap(
+                                    user_data
+                                )
+                                APP.action(ShowWindow(APP.remap_midi_device_window))
+
+                            dpg.add_button(
+                                label="Remap",
+                                callback=remap,
+                                user_data=i,
+                            )
 
                         dpg.add_table_cell()
 
@@ -960,7 +1077,7 @@ class IOWindow(Window):
                             default_value="",
                             tag=arg_tag,
                             on_enter=True,
-                            callback=create_io,
+                            callback=self.create_io,
                             user_data=("create", i, "outputs"),
                         )
 
@@ -999,8 +1116,9 @@ class GlobalStorageDebugWindow(ResettableWindow):
                         dpg.add_text(name)
                         dpg.add_text(value, tag=f"{self.tag}.{i}")
 
-                dpg.set_value("n_global_storage_elements", len(model.GlobalStorage.items()))
-
+                dpg.set_value(
+                    "n_global_storage_elements", len(model.GlobalStorage.items())
+                )
 
 
 class HelpWindow(ResettableWindow):
@@ -1031,7 +1149,6 @@ class HelpWindow(ResettableWindow):
                 )
 
     def create(self):
-
         def add_header(text):
             dpg.add_text(default_value=text)
             dpg.bind_item_theme(dpg.last_item(), "header.theme")
@@ -1045,21 +1162,21 @@ class HelpWindow(ResettableWindow):
 
         with self.window:
             if APP._active_clip is not None:
-
                 if APP._active_clip.inputs:
                     add_header("[Inputs]")
                     add_text("Available channels:")
-
 
                     text = ""
                     for input_channel in APP._active_clip.inputs:
                         text += f"   {input_channel.name}\n"
 
-                    text += textwrap.dedent("""
+                    text += textwrap.dedent(
+                        """
                     The following functions are available for all Input Channels:
                     - Input.get()  ->  Returns the current value
                     - Input.value  ->  Returns the current value
-                    """)
+                    """
+                    )
                     add_text(text)
 
                 if APP._active_clip.outputs:
@@ -1072,12 +1189,14 @@ class HelpWindow(ResettableWindow):
                             text += f"   {output_channel.name}.{channel_name} / {output_channel.name}['{channel_name}']\n"
                         text += "\n"
 
-                    text += textwrap.dedent("""
+                    text += textwrap.dedent(
+                        """
                     The following functions are available for all Input Channels:
                     - Output.set(value)                ->  Sets the current value
                     - Output.channel.value = value     ->  Sets the current value
                     - Output['channel'].value = value  ->  Sets the current value
-                    """)
+                    """
+                    )
                     add_text(text)
 
             add_header("[Functions]")
@@ -1088,7 +1207,6 @@ class HelpWindow(ResettableWindow):
 
 
 class PerformancePresetWindow(ResettableWindow):
-
     def __init__(self, state):
         super().__init__(
             state,
@@ -1108,9 +1226,7 @@ class PerformancePresetWindow(ResettableWindow):
             SelectClip({"track": track, "clip": clip}).execute()
 
         with self.window:
-            dpg.add_button(
-                label="Refresh", callback=self.reset_callback
-            )
+            dpg.add_button(label="Refresh", callback=self.reset_callback)
             with dpg.table(tag=f"{self.tag}.table"):
                 for i, track in enumerate(self.state.tracks):
                     dpg.add_table_column(label=track.name)
@@ -1145,7 +1261,6 @@ class PerformancePresetWindow(ResettableWindow):
 
 
 class GlobalPerformancePresetWindow(ResettableWindow):
-
     def __init__(self, state):
         super().__init__(
             state,
@@ -1182,7 +1297,6 @@ class GlobalPerformancePresetWindow(ResettableWindow):
 
 
 class SaveNewGlobalPerformancePresetWindow(ResettableWindow):
-
     def __init__(self, state):
         super().__init__(
             state,
@@ -1275,7 +1389,6 @@ class SaveNewGlobalPerformancePresetWindow(ResettableWindow):
 
 
 class ManageTriggerWindow(ResettableWindow):
-
     def __init__(self, state):
         super().__init__(
             state,
@@ -1292,11 +1405,10 @@ class ManageTriggerWindow(ResettableWindow):
             dpg.add_button(
                 label="Add Trigger",
                 callback=action_callback,
-                user_data=ShowWindow(APP.add_new_trigger_window)
+                user_data=ShowWindow(APP.add_new_trigger_window),
             )
 
             with dpg.table(tag="triggers.table"):
-
                 dpg.add_table_column(label="Name")
                 dpg.add_table_column(label="Event")
                 dpg.add_table_column(label="Command")
@@ -1318,14 +1430,13 @@ class ManageTriggerWindow(ResettableWindow):
                         dpg.add_text(default_value=trigger.command)
 
                         # Edit
-                        dpg.add_button(label="Edit", callback=lambda:None)
+                        dpg.add_button(label="Edit", callback=lambda: None)
 
                         # Delete
-                        dpg.add_button(label="X", callback=lambda:None)
+                        dpg.add_button(label="X", callback=lambda: None)
 
 
 class AddNewTriggerWindow(ResettableWindow):
-
     def __init__(self, state):
         super().__init__(
             state,
@@ -1373,7 +1484,10 @@ class AddNewTriggerWindow(ResettableWindow):
 
             def type_changed(sender, app_data, user_data):
                 if app_data == "MIDI":
-                    dpg.set_value(item="new_trigger.event", value="<device_name>, <channel>/<note>")
+                    dpg.set_value(
+                        item="new_trigger.event",
+                        value="<device_name>, <channel>/<note>",
+                    )
                 elif app_data == "OSC":
                     dpg.set_value(item="new_trigger.event", value="<endpoint>")
                 elif app_data == "Key":
@@ -1381,7 +1495,11 @@ class AddNewTriggerWindow(ResettableWindow):
 
                 dpg.configure_item("new_trigger.midi_learn", enabled=app_data == "MIDI")
 
-            with dpg.table(tag="new_trigger.table", header_row=False, policy=dpg.mvTable_SizingStretchProp):
+            with dpg.table(
+                tag="new_trigger.table",
+                header_row=False,
+                policy=dpg.mvTable_SizingStretchProp,
+            ):
                 dpg.add_table_column()
                 dpg.add_table_column()
                 dpg.add_table_column()
@@ -1392,17 +1510,35 @@ class AddNewTriggerWindow(ResettableWindow):
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Type")
-                    dpg.add_radio_button(tag="new_trigger.type", items=["MIDI", "OSC", "Key"], horizontal=True, callback=type_changed, default_value="MIDI")
+                    dpg.add_radio_button(
+                        tag="new_trigger.type",
+                        items=["MIDI", "OSC", "Key"],
+                        horizontal=True,
+                        callback=type_changed,
+                        default_value="MIDI",
+                    )
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Event")
-                    dpg.add_input_text(tag="new_trigger.event", default_value="<device_name>, <channel>/<note>", width=400)
-                    dpg.add_button(tag="new_trigger.midi_learn", label="MIDI Learn", callback=self.create_and_show_learn_midi_map_window_callback)
+                    dpg.add_input_text(
+                        tag="new_trigger.event",
+                        default_value="<device_name>, <channel>/<note>",
+                        width=400,
+                    )
+                    dpg.add_button(
+                        tag="new_trigger.midi_learn",
+                        label="MIDI Learn",
+                        callback=self.create_and_show_learn_midi_map_window_callback,
+                    )
 
                 with dpg.table_row():
                     dpg.add_text(default_value="Command")
                     dpg.add_input_text(tag="new_trigger.command", width=400)
-                    dpg.add_button(tag="new_trigger.command_learn", label="Command Learn", callback=self.enter_command_listen_mode)
+                    dpg.add_button(
+                        tag="new_trigger.command_learn",
+                        label="Command Learn",
+                        callback=self.enter_command_listen_mode,
+                    )
 
                 with dpg.table_row(tag=f"new_trigger.table.save_cancel_row"):
                     dpg.add_group()
@@ -1414,7 +1550,9 @@ class AddNewTriggerWindow(ResettableWindow):
         APP.command_listening_mode = True
         with dpg.theme() as button_theme:
             with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (255, 0, 0, 40), category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(
+                    dpg.mvThemeCol_Button, (255, 0, 0, 40), category=dpg.mvThemeCat_Core
+                )
 
         dpg.bind_item_theme("new_trigger.command_learn", button_theme)
         dpg.configure_item(item="new_trigger.command_learn", label="Listening...")
@@ -1423,14 +1561,20 @@ class AddNewTriggerWindow(ResettableWindow):
         APP.command_listening_mode = False
         with dpg.theme() as button_theme:
             with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_color(dpg.mvThemeCol_Button, (100, 100, 100, 255), category=dpg.mvThemeCat_Core)
+                dpg.add_theme_color(
+                    dpg.mvThemeCol_Button,
+                    (100, 100, 100, 255),
+                    category=dpg.mvThemeCat_Core,
+                )
 
         dpg.bind_item_theme("new_trigger.command_learn", button_theme)
         dpg.configure_item(item="new_trigger.command_learn", label="Command Learn")
 
         dpg.set_value(item="new_trigger.command", value=command)
 
-    def create_and_show_learn_midi_map_window_callback(self, sender, app_data, user_data):
+    def create_and_show_learn_midi_map_window_callback(
+        self, sender, app_data, user_data
+    ):
         try:
             dpg.delete_item("new_trigger.midi_map_window")
         except:
@@ -1443,17 +1587,25 @@ class AddNewTriggerWindow(ResettableWindow):
             if model.LAST_MIDI_MESSAGE is not None:
                 device_name, message = model.LAST_MIDI_MESSAGE
                 note_control, value = model.midi_value(message)
-                dpg.set_value("new_trigger.event", f"{device_name}, {message.channel}/{note_control}")
+                dpg.set_value(
+                    "new_trigger.event",
+                    f"{device_name}, {message.channel}/{note_control}",
+                )
                 dpg.delete_item("new_trigger.midi_map_window")
 
         with dpg.window(
-            tag="new_trigger.midi_map_window", modal=True, width=300, height=300, no_move=True
+            tag="new_trigger.midi_map_window",
+            modal=True,
+            width=300,
+            height=300,
+            no_move=True,
         ):
             dpg.add_text("Incoming MIDI: ")
             dpg.add_text(source="last_midi_message")
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Save", callback=save)
                 dpg.add_button(label="Cancel", callback=cancel)
+
 
 class ClipAutomationPresetWindow(ResettableWindow):
     def __init__(self, state):
@@ -1476,7 +1628,7 @@ class ClipAutomationPresetWindow(ResettableWindow):
 
         def activate_automation(sender, app_data, user_data):
             clip, channel, automation = user_data
-            APP.select_automation_callback(None ,None, (channel, automation))
+            APP.select_automation_callback(None, None, (channel, automation))
 
             for channel in clip.inputs:
                 if not isinstance(channel, model.AutomatableSourceNode):
@@ -1678,26 +1830,29 @@ class ConsoleWindow(FixedWindow):
             no_resize=True,
         )
 
-
     def create(self):
         with self.window:
-
             with dpg.group(horizontal=True):
+
                 def clear_errors():
                     self.current_log.clear()
+
                 dpg.add_button(label="Clear", callback=clear_errors)
                 dpg.bind_item_theme(dpg.last_item(), "clear_button.theme")
 
                 def show_debug():
                     self.current_log = self.state.log
+
                 dpg.add_button(label="Debug", callback=show_debug)
 
                 def show_osc():
                     self.current_log = self.state.osc_log
+
                 dpg.add_button(label="OSC", callback=show_osc)
 
                 def show_midi():
                     self.current_log = self.state.midi_log
+
                 dpg.add_button(label="MIDI", callback=show_midi)
 
             dpg.add_text(tag="io_debug.text")
@@ -1751,9 +1906,7 @@ class CodeWindow(FixedWindow):
                 APP.code_view = CLIP_VIEW
                 hide_code_windows()
                 if valid(APP._active_clip):
-                    dpg.configure_item(
-                        get_code_window_tag(APP._active_clip), show=True
-                    )
+                    dpg.configure_item(get_code_window_tag(APP._active_clip), show=True)
 
             with dpg.group(horizontal=True, height=20):
                 dpg.add_button(label="Save", callback=APP.save_menu_callback)

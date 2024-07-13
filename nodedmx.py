@@ -1,6 +1,5 @@
 """
 TODO:
-    * Add presets for non automatable channels
     * Copy/paste bugs
     * Convert remaining windows to objects
     * Sequence editing, deleting, reordering
@@ -136,22 +135,18 @@ class Application:
         self.gui_state = {
             # Position of the nodes in the node editor.
             "node_positions": {},
-
             # I/O type
             "io_types": {
                 "inputs": [None] * 5,
                 "outputs": [None] * 5,
             },
-
             # I/O arguments
             "io_args": {
                 "inputs": [None] * 5,
                 "outputs": [None] * 5,
             },
-
             # Last active clip for each track
             "track_last_active_clip": {},
-
             # Themes for each clip preset
             "clip_preset_themes": {},
         }
@@ -159,7 +154,6 @@ class Application:
         self.tags = {
             # Drag Point tags for the currently selected automation window
             "point_tags": [],
-
             # Things to hide in the gui when a clip is selected.
             "hide_on_clip_selection": [],
         }
@@ -223,6 +217,7 @@ class Application:
         self.rename_window = None
         self.track_properties_windows = {}
         self.console_window = None
+        self.remap_midi_device_window = None
 
     def run(self):
         """Initialize then run the main loop."""
@@ -264,11 +259,16 @@ class Application:
 
         logging.debug("Creating performance windows")
         self.performance_preset_window = gui.PerformancePresetWindow(self.state)
-        self.save_new_global_performance_preset_window = gui.SaveNewGlobalPerformancePresetWindow(self.state)
-        self.global_performance_preset_window = gui.GlobalPerformancePresetWindow(self.state)
+        self.save_new_global_performance_preset_window = (
+            gui.SaveNewGlobalPerformancePresetWindow(self.state)
+        )
+        self.global_performance_preset_window = gui.GlobalPerformancePresetWindow(
+            self.state
+        )
         self.clip_automation_presets_window = gui.ClipAutomationPresetWindow(self.state)
         self.add_new_trigger_window = gui.AddNewTriggerWindow(self.state)
         self.manage_trigger_window = gui.ManageTriggerWindow(self.state)
+        self.remap_midi_device_window = gui.RemapMidiDeviceWindow(self.state)
 
         #### Help Window ####
         self.help_window = gui.HelpWindow(self.state)
@@ -293,7 +293,9 @@ class Application:
         with dpg.handler_registry():
             dpg.add_mouse_move_handler(callback=self.mouse_move_callback)
             dpg.add_mouse_click_handler(callback=self.mouse_click_callback)
-            dpg.add_mouse_double_click_handler(callback=self.mouse_double_click_callback)
+            dpg.add_mouse_double_click_handler(
+                callback=self.mouse_double_click_callback
+            )
             dpg.add_key_press_handler(callback=self.key_press_callback)
             dpg.add_key_down_handler(callback=self.key_down_callback)
             dpg.add_key_release_handler(callback=self.key_release_callback)
@@ -310,13 +312,15 @@ class Application:
         #### File Dialogs ####
         logging.debug("Creating viewport menu bar")
         self.create_viewport_menu_bar()
-        
+
         # Initialize Tracks
         self._active_track = self.state.tracks[0]
 
         # Need to create these after the node_editor_windows
         for track in self.state.tracks:
-            self.track_properties_windows[track.id] = gui.TrackPropertiesWindow(self.state, track)
+            self.track_properties_windows[track.id] = gui.TrackPropertiesWindow(
+                self.state, track
+            )
 
         self.restore_gui_state()
 
@@ -358,6 +362,7 @@ class Application:
 
     def gui_lock(func):
         """Return a wrapper that will grab the GUI lock."""
+
         def wrapper(self, sender, app_data, user_data):
             with self.lock:
                 return func(self, sender, app_data, user_data)
@@ -713,62 +718,96 @@ class Application:
 
                 with dpg.popup(plot_tag, mousebutton=1):
                     dpg.add_menu_item(
-                        label="Double Automation", callback=self.double_automation_callback
+                        label="Double Automation",
+                        callback=self.double_automation_callback,
                     )
                     dpg.add_menu_item(
-                        label="Duplicate Preset", callback=self.duplicate_channel_preset_callback
+                        label="Duplicate Preset",
+                        callback=self.duplicate_channel_preset_callback,
                     )
                     with dpg.menu(label="Set Quantize"):
                         dpg.add_menu_item(
-                            label="Off", callback=self.set_quantize_callback, user_data=None
+                            label="Off",
+                            callback=self.set_quantize_callback,
+                            user_data=None,
                         )
                         dpg.add_menu_item(
-                            label="1 bar", callback=self.set_quantize_callback, user_data=4
+                            label="1 bar",
+                            callback=self.set_quantize_callback,
+                            user_data=4,
                         )
                         dpg.add_menu_item(
-                            label="1/2", callback=self.set_quantize_callback, user_data=2
+                            label="1/2",
+                            callback=self.set_quantize_callback,
+                            user_data=2,
                         )
                         dpg.add_menu_item(
-                            label="1/4", callback=self.set_quantize_callback, user_data=1
+                            label="1/4",
+                            callback=self.set_quantize_callback,
+                            user_data=1,
                         )
                         dpg.add_menu_item(
-                            label="1/8", callback=self.set_quantize_callback, user_data=0.5
+                            label="1/8",
+                            callback=self.set_quantize_callback,
+                            user_data=0.5,
                         )
                         dpg.add_menu_item(
-                            label="1/16", callback=self.set_quantize_callback, user_data=0.25
+                            label="1/16",
+                            callback=self.set_quantize_callback,
+                            user_data=0.25,
                         )
                     with dpg.menu(label="Shift (Beats)"):
                         with dpg.menu(label="Left"):
                             dpg.add_menu_item(
-                                label="4", callback=self.shift_points_callback, user_data=-4
+                                label="4",
+                                callback=self.shift_points_callback,
+                                user_data=-4,
                             )
                             dpg.add_menu_item(
-                                label="2", callback=self.shift_points_callback, user_data=-2
+                                label="2",
+                                callback=self.shift_points_callback,
+                                user_data=-2,
                             )
                             dpg.add_menu_item(
-                                label="1", callback=self.shift_points_callback, user_data=-1
+                                label="1",
+                                callback=self.shift_points_callback,
+                                user_data=-1,
                             )
                             dpg.add_menu_item(
-                                label="1/2", callback=self.shift_points_callback, user_data=-0.5
+                                label="1/2",
+                                callback=self.shift_points_callback,
+                                user_data=-0.5,
                             )
                             dpg.add_menu_item(
-                                label="1/4", callback=self.shift_points_callback, user_data=-0.25
+                                label="1/4",
+                                callback=self.shift_points_callback,
+                                user_data=-0.25,
                             )
                         with dpg.menu(label="Right"):
                             dpg.add_menu_item(
-                                label="4", callback=self.shift_points_callback, user_data=4
+                                label="4",
+                                callback=self.shift_points_callback,
+                                user_data=4,
                             )
                             dpg.add_menu_item(
-                                label="2", callback=self.shift_points_callback, user_data=2
+                                label="2",
+                                callback=self.shift_points_callback,
+                                user_data=2,
                             )
                             dpg.add_menu_item(
-                                label="1", callback=self.shift_points_callback, user_data=1
+                                label="1",
+                                callback=self.shift_points_callback,
+                                user_data=1,
                             )
                             dpg.add_menu_item(
-                                label="1/2", callback=self.shift_points_callback, user_data=0.5
+                                label="1/2",
+                                callback=self.shift_points_callback,
+                                user_data=0.5,
                             )
                             dpg.add_menu_item(
-                                label="1/4", callback=self.shift_points_callback, user_data=0.25
+                                label="1/4",
+                                callback=self.shift_points_callback,
+                                user_data=0.25,
                             )
                     with dpg.menu(label="Interpolation Mode"):
                         dpg.add_menu_item(
@@ -1047,7 +1086,6 @@ class Application:
                                 callback=move,
                                 user_data=(container, i, i + 1),
                             )
-
 
     def create_and_show_track_sequences_window(self):
         try:
@@ -1348,7 +1386,11 @@ class Application:
                 )
         with dpg.theme(tag="code_editor.separator.theme"):
             with dpg.theme_component(dpg.mvAll):
-                for theme in [dpg.mvThemeCol_Button, dpg.mvThemeCol_ButtonHovered, dpg.mvThemeCol_ButtonActive]:
+                for theme in [
+                    dpg.mvThemeCol_Button,
+                    dpg.mvThemeCol_ButtonHovered,
+                    dpg.mvThemeCol_ButtonActive,
+                ]:
                     dpg.add_theme_color(
                         theme,
                         (0, 0, 0, 0),
@@ -1396,7 +1438,9 @@ class Application:
 
         for output_channel in track.outputs:
             if isinstance(output_channel, model.DmxOutputGroup):
-                starting_address = max(starting_address, output_channel.outputs[-1].dmx_address + 1)
+                starting_address = max(
+                    starting_address, output_channel.outputs[-1].dmx_address + 1
+                )
             else:
                 starting_address = max(starting_address, output_channel.dmx_address + 1)
 
@@ -1464,7 +1508,6 @@ class Application:
                         raise RuntimeError(f"Failed to duplicate {obj.id}")
                 else:
                     raise RuntimeError(f"Failed to duplicate {obj.id}")
-
 
         if self._active_clip_slot is not None:
             self.paste_clip(self._active_clip_slot[0], self._active_clip_slot[1])
@@ -1593,8 +1636,12 @@ class Application:
             self.inspector_window.update()
 
         # Update GlobalStorageDebugWindow
-        if len(model.GlobalStorage.items()) != dpg.get_value("n_global_storage_elements"):
-            self.global_storage_debug_window.reset(show=self.global_storage_debug_window.shown)
+        if len(model.GlobalStorage.items()) != dpg.get_value(
+            "n_global_storage_elements"
+        ):
+            self.global_storage_debug_window.reset(
+                show=self.global_storage_debug_window.shown
+            )
 
         for i, (name, obj) in enumerate(model.GlobalStorage.items()):
             value = obj.value if isinstance(obj, model.CodeEditorChannel) else obj
@@ -1723,7 +1770,9 @@ class Application:
                         {
                             "channel": channel.id,
                             "automation": self._clip_preset_buffer[channel.id],
-                            "speed": None if channel.is_constant else dpg.get_value(f"preset.{i}.speed"),
+                            "speed": None
+                            if channel.is_constant
+                            else dpg.get_value(f"preset.{i}.speed"),
                         }
                     )
 
@@ -1790,7 +1839,6 @@ class Application:
                     }
 
                 for i, channel in enumerate(clip.inputs):
-
                     with dpg.table_row():
                         # Name column
                         dpg.add_text(default_value=channel.name)
@@ -1819,7 +1867,8 @@ class Application:
 
                         else:
                             with dpg.menu(
-                                tag=f"{channel.id}.select_preset_bar", label="Select Preset"
+                                tag=f"{channel.id}.select_preset_bar",
+                                label="Select Preset",
                             ):
                                 for automation in channel.automations:
                                     dpg.add_menu_item(
@@ -1865,7 +1914,6 @@ class Application:
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="Save", callback=save)
                         dpg.add_button(label="Cancel", callback=cancel)
-
 
     def create_standard_source_node(self, sender, app_data, user_data):
         action = user_data[0]
@@ -1965,7 +2013,9 @@ class Application:
                     dpg.configure_item(f"{node_tag}.popup", show=True)
                 else:
                     clip, input_channel = user_data
-                    gui.SelectInputNode({"clip": clip,  "channel": input_channel}).execute()
+                    gui.SelectInputNode(
+                        {"clip": clip, "channel": input_channel}
+                    ).execute()
 
             handler_registry_tag = f"{node_tag}.item_handler_registry"
             with dpg.item_handler_registry(tag=handler_registry_tag) as handler:
@@ -2017,7 +2067,9 @@ class Application:
             # Special Min/Max Parameters
             def update_min_max_value(sender, app_data, user_data):
                 clip, input_channel, parameter_index, min_max = user_data
-                self.update_parameter_callback(None, app_data, (input_channel, parameter_index))
+                self.update_parameter_callback(
+                    None, app_data, (input_channel, parameter_index)
+                )
 
                 value = model.cast[input_channel.dtype](app_data)
                 kwarg = {f"{min_max}_value": value}
@@ -2251,10 +2303,11 @@ class Application:
                     label="Clear MIDI Map", callback=unmap_midi, user_data=obj
                 )
 
-
             if isinstance(obj, (model.SourceNode,)):
+
                 def copy(sender, app_data, user_data):
                     self.copy_buffer = [user_data]
+
                 dpg.add_menu_item(
                     label="Copy",
                     callback=copy,
@@ -2264,10 +2317,9 @@ class Application:
                 def delete(sender, app_data, user_data):
                     clip, obj = user_data
                     self.delete_node(clip, obj)
+
                 dpg.add_menu_item(
-                    label="Delete",
-                    callback=delete,
-                    user_data=(clip, obj)
+                    label="Delete", callback=delete, user_data=(clip, obj)
                 )
 
     def create_node_menu(self, parent, clip):
@@ -2335,7 +2387,6 @@ class Application:
                 callback=self.delete_selected_nodes_callback,
                 user_data=clip,
             )
-
 
     def create_properties_window(self, clip, obj):
         window_tag = get_properties_window_tag(obj)
@@ -2631,7 +2682,6 @@ class Application:
                         user_data=gui.ShowWindow(self.global_storage_debug_window),
                     )
 
-
             #### Performance menu ####
             with dpg.menu(label="Performance"):
                 dpg.add_menu_item(
@@ -2643,9 +2693,7 @@ class Application:
                 dpg.add_menu_item(
                     label="Global Presets",
                     callback=self.action_callback,
-                    user_data=gui.ShowWindow(
-                        self.global_performance_preset_window
-                    ),
+                    user_data=gui.ShowWindow(self.global_performance_preset_window),
                 )
 
                 dpg.add_menu_item(
@@ -2665,9 +2713,7 @@ class Application:
             )
             dpg.bind_item_theme(dpg.last_item(), "reset_button.theme")
 
-            dpg.add_button(
-                label="Tap Tempo", callback=self.tap_tempo_callback
-            )
+            dpg.add_button(label="Tap Tempo", callback=self.tap_tempo_callback)
 
             def update_tempo(sender, app_data):
                 self.state.tempo = app_data
@@ -2732,7 +2778,9 @@ class Application:
         )
         if result.success:
             self.reset_automation_plot(input_channel)
-            gui.SelectInputNode({"clip": self._active_clip, "channel": input_channel}).execute()
+            gui.SelectInputNode(
+                {"clip": self._active_clip, "channel": input_channel}
+            ).execute()
 
     def shift_points_callback(self, sender, app_data, user_data):
         if util.valid(self._active_input_channel.active_automation):
@@ -2774,7 +2822,9 @@ class Application:
         if result.success:
             automation = result.payload
             self.add_automation_tab(self._active_input_channel, automation)
-            self.select_automation_callback(None, None, (self._active_input_channel, automation))
+            self.select_automation_callback(
+                None, None, (self._active_input_channel, automation)
+            )
 
     def delete_automation_callback(self, sender, app_data, user_data):
         input_channel, automation = user_data
@@ -3042,7 +3092,9 @@ class Application:
         if not result.success:
             raise RuntimeError("Failed to map midi")
 
-    def create_and_show_learn_midi_map_window_callback(self, sender, app_data, user_data):
+    def create_and_show_learn_midi_map_window_callback(
+        self, sender, app_data, user_data
+    ):
         obj, inout = user_data
         try:
             dpg.delete_item("midi_map_window")
@@ -3286,7 +3338,9 @@ class Application:
             self.delete_selected_nodes_callback(None, None, self._active_clip)
         elif key_n in [120]:
             if self._active_input_channel is not None:
-                self.enable_recording_mode_callback(None, None, self._active_input_channel)
+                self.enable_recording_mode_callback(
+                    None, None, self._active_input_channel
+                )
         elif key_n in [9]:  # tab
             pass
         elif key in ["C"]:
@@ -3392,9 +3446,7 @@ class Application:
         self.keyboard_mode = not self.keyboard_mode
         dpg.configure_item(
             "key_mode_button",
-            label="Key Mode: On"
-            if self.keyboard_mode
-            else "Key Mode: Off",
+            label="Key Mode: On" if self.keyboard_mode else "Key Mode: Off",
         )
 
     def print_callback(self, sender, app_data, user_data):
@@ -3451,7 +3503,9 @@ class Application:
             if not isinstance(channel, model.AutomatableSourceNode):
                 continue
 
-            channel.ext_set(channel.max_parameter.value if pressed else channel.min_parameter.value)
+            channel.ext_set(
+                channel.max_parameter.value if pressed else channel.min_parameter.value
+            )
 
     def _quantize_point(self, x, y, dtype, length, quantize_x=False):
         x2 = x

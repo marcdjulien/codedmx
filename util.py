@@ -1,6 +1,9 @@
 import math
+
+
 def clamp(x, min_value, max_value):
     return min(max(min_value, x), max_value)
+
 
 def norm_distance(p1, p2, x_limit, y_limit):
     np1 = (
@@ -25,7 +28,7 @@ def valid(*objs):
 
 
 def beats_to_seconds(beat, tempo):
-    return beat * ( 1.0 / tempo) * 60.0
+    return beat * (1.0 / tempo) * 60.0
 
 
 def seconds_to_beats(s, tempo):

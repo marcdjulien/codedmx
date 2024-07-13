@@ -189,7 +189,7 @@ class Channel(Identifier):
 
 
 class CodeEditorChannel:
-    """Decorator around the Channel for use in the code rditor.
+    """Decorator around the Channel for use in the code editor.
 
     This is a restricted version of the Channel that prevents
     a user from doing manipulating the internal models.
@@ -200,7 +200,9 @@ class CodeEditorChannel:
         self.valid_attributes = ["set", "get", "value", "__class__"]
 
         if isinstance(channel, DmxOutputGroup):
-            super().__getattribute__("valid_attributes").extend(super().__getattribute__("_channel").map.keys())
+            super().__getattribute__("valid_attributes").extend(
+                super().__getattribute__("_channel").map.keys()
+            )
 
     @property
     def channel(self, value):
@@ -209,14 +211,18 @@ class CodeEditorChannel:
     @channel.setter
     def channel(self, value):
         attrs = super().__getattribute__("valid_attributes")
-        raise CodeEditorException(f"'channel' is not a valid attribute. Only use: {', '.join(attrs)}")
+        raise CodeEditorException(
+            f"'channel' is not a valid attribute. Only use: {', '.join(attrs)}"
+        )
 
     def __getattribute__(self, key):
         attrs = super().__getattribute__("valid_attributes")
         if key not in attrs:
-            STATE.log.append(CodeEditorException(
-                f"'{key}' is not a valid attribute. Only use: {', '.join(attrs)}"
-            ))
+            STATE.log.append(
+                CodeEditorException(
+                    f"'{key}' is not a valid attribute. Only use: {', '.join(attrs)}"
+                )
+            )
             return
         else:
             return getattr(super().__getattribute__("_channel"), key)
@@ -873,7 +879,11 @@ class ClipPreset(Identifier):
             {
                 "name": self.name,
                 "presets": [
-                    (channel.id, automation if channel.is_constant else automation.id, speed)
+                    (
+                        channel.id,
+                        automation if channel.is_constant else automation.id,
+                        speed,
+                    )
                     for channel, automation, speed in self.presets
                 ],
             }
@@ -887,7 +897,13 @@ class ClipPreset(Identifier):
             channel_id, automation_id, speed = preset_data
             channel = UUID_DATABASE[channel_id]
             self.presets.append(
-                (channel, automation_id if channel.is_constant else UUID_DATABASE[automation_id], speed)
+                (
+                    channel,
+                    automation_id
+                    if channel.is_constant
+                    else UUID_DATABASE[automation_id],
+                    speed,
+                )
             )
 
 
@@ -956,7 +972,6 @@ class Trigger(Identifier):
 
 
 class TriggerManager:
-
     def __init__(self):
         self.triggers = []
 
@@ -976,7 +991,11 @@ class Code:
         self.compiled = None
 
     def exists(self):
-        return os.path.exists(self.file_path_name) if self.file_path_name is not None else False
+        return (
+            os.path.exists(self.file_path_name)
+            if self.file_path_name is not None
+            else False
+        )
 
     def reload(self):
         try:
@@ -1535,7 +1554,9 @@ class OscServerInput(IO):
             )
 
             def start_osc_listening_server():
-                STATE.osc_log.append(f"OSCServer started on {self.server.server_address}")
+                STATE.osc_log.append(
+                    f"OSCServer started on {self.server.server_address}"
+                )
                 self.server.serve_forever()
                 STATE.osc_log.append("OSC Server Stopped")
 
@@ -1560,9 +1581,7 @@ class OscServerInput(IO):
         super().deserialize(data)
         for endpoint, input_channels in data["channel_map"].items():
             for input_channel_id in input_channels:
-                self.map_channel(
-                    endpoint, UUID_DATABASE[input_channel_id]
-                )
+                self.map_channel(endpoint, UUID_DATABASE[input_channel_id])
 
 
 # TODO: Map these when the real server is created.
@@ -1605,16 +1624,34 @@ class MidiInputDevice(IO):
     arg_template = "name"
     type = "midi_input"
 
-    def __init__(self, args):
+    def __init__(self, args, channel_map=None):
         super().__init__(args)
         self.device_name = args
         self.port = None
         self.channel_map = defaultdict(lambda: defaultdict(list))
+
         self.connect()
+
+        if channel_map is not None:
+            self.map_channels(channel_map)
 
     def map_channel(self, midi_channel, note_control, channel):
         global_unmap_midi(channel)
         self.channel_map[midi_channel][note_control].append(channel)
+
+        # There are two ways to update a mapping.
+        # 1) Update the parameter in the gui, then trigger this map channel
+        # function.
+        # 2) Trigger this map channel function first, then update the parameter.
+        # The following code is for method 2, should update this to be consistent.
+        channel.get_parameter("device").value = self.device_name
+        channel.get_parameter("id").value = f"{midi_channel}/{note_control}"
+
+    def map_channels(self, channel_map):
+        for midi_channel, note_controls in channel_map.items():
+            for note_control, channels in note_controls.items():
+                for channel in channels:
+                    self.map_channel(midi_channel, note_control, channel)
 
     def unmap_channel(self, channel):
         for midi_channel, note_controls in self.channel_map.items():
@@ -1623,6 +1660,9 @@ class MidiInputDevice(IO):
                     if channel == other_channel:
                         self.channel_map[midi_channel][note_control].remove(channel)
                         break
+
+    def reset(self):
+        self.channel_map = defaultdict(lambda: defaultdict(list))
 
     def callback(self, message):
         global LAST_MIDI_MESSAGE
@@ -1638,7 +1678,9 @@ class MidiInputDevice(IO):
                 channel.ext_set(value)
 
         if value >= 127:
-            STATE.trigger_manager.fire_triggers("midi", (self.device_name, midi_channel, note_control))
+            STATE.trigger_manager.fire_triggers(
+                "midi", (self.device_name, midi_channel, note_control)
+            )
 
         self.update_io_time()
 
@@ -1840,7 +1882,9 @@ class ProgramState(Identifier):
         # Update timing
         if self.playing:
             self.time_since_start_s = time.time() - self.play_time_start_s
-            self.time_since_start_beat = util.seconds_to_beats(self.time_since_start_s, self.tempo)
+            self.time_since_start_beat = util.seconds_to_beats(
+                self.time_since_start_s, self.tempo
+            )
 
             # Update values
             for track in self.tracks:
@@ -2059,7 +2103,11 @@ class ProgramState(Identifier):
             presets = []
             for preset_info in all_preset_info:
                 channel = self.get_obj(preset_info["channel"])
-                automation = preset_info["automation"] if channel.is_constant else self.get_obj(preset_info["automation"])
+                automation = (
+                    preset_info["automation"]
+                    if channel.is_constant
+                    else self.get_obj(preset_info["automation"])
+                )
                 speed = preset_info["speed"]
                 presets.append((channel, automation, speed))
 
@@ -2294,6 +2342,25 @@ class ProgramState(Identifier):
             obj = self.get_obj(obj_id)
             global_unmap_midi(obj)
             return Result(True)
+
+        elif cmd == "remap_midi_device":
+            data_string = " ".join(toks[1::])
+            data = json.loads(data_string)
+
+            old_device_index = data["index"]
+            old_device = self.io_inputs[old_device_index]
+            new_device_name = data["new_device_name"]
+
+            new_device = MidiInputDevice(
+                new_device_name, channel_map=old_device.channel_map
+            )
+            self.io_inputs[old_device_index] = new_device
+            MIDI_INPUT_DEVICES[new_device_name] = new_device
+
+            del MIDI_INPUT_DEVICES[old_device.device_name]
+            old_device.reset()
+
+            return Result(True, new_device)
 
     def get_obj(self, id_):
         try:
