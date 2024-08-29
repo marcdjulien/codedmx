@@ -1,5 +1,8 @@
 """
 TODO:
+    * Preview outputs
+    * Better simulator
+    * Performance Layout
     * Copy/paste bugs
     * Convert remaining windows to objects
     * Sequence editing, deleting, reordering
