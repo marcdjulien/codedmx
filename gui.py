@@ -132,6 +132,7 @@ class SelectClip(GuiAction):
 
         self.app.clip_automation_presets_window.reset(clip)
         self.app.help_window.reset()
+        self.app.clip_params_window.reset()
 
     def undo(self):
         self.app.save_last_active_clip()
@@ -234,7 +235,7 @@ class CreateNewClip(GuiAction):
         self.create_clip_properties_window(clip)
 
         # Add the associated node and code editor
-        self.create_node_editor_window(clip)
+        #self.create_node_editor_window(clip) # TODO: Delete this code
         self.app.create_code_editor_window(clip)
         self.app.resize_windows_callback(None, None, None)
 
@@ -2270,3 +2271,151 @@ class AutomationWindow(FixedWindow):
                 # Right click
                 if app_data[0] == 1:
                     dpg.configure_item(item=popup_tag, show=True)
+
+
+class ClipParametersWindow(ResettableWindow, FixedWindow):
+    def __init__(self, state):
+        super().__init__(
+            state,
+            tag="clip_parameters.gui",
+            width=WINDOW_INFO["node_size"][0],
+            height=WINDOW_INFO["node_size"][1],
+            pos=WINDOW_INFO["node_pos"],
+            show=True,
+        )
+
+    def create(self):
+        clip = APP._active_clip
+        if clip is None:
+            return
+        with self.window:
+            dpg.configure_item(self.tag, label=f"Clip Parameters | {clip.name}")
+            menu_tag = f"{self.tag}.menu_bar"
+            with dpg.menu_bar(tag=menu_tag):
+
+                # TODO: The node menu should just add to the current active clip
+                # so that we don't need a new menu for each clip
+                APP.create_node_menu(menu_tag, clip)
+
+                preset_menu_tag = f"{menu_tag}.preset_menu"
+                with dpg.menu(label="Presets", tag=preset_menu_tag):
+                    dpg.add_menu_item(
+                        label="New Preset",
+                        callback=APP.create_and_show_save_presets_window,
+                        user_data=(clip, None),
+                    )
+                    dpg.add_menu_item(
+                        label="Reorder",
+                        callback=APP.create_and_show_reorder_window,
+                        user_data=(
+                            clip.presets,
+                            preset_menu_tag,
+                            get_preset_menu_bar_tag,
+                        ),
+                    )
+                    for preset in clip.presets:
+                        APP.add_clip_preset_to_menu(clip, preset)
+
+                dpg.add_menu_item(
+                    label="Show All Automation",
+                    callback=action_callback,
+                    user_data=ShowWindow(APP.clip_automation_presets_window),
+                )
+
+            def set_window_percent(sender, app_data, user_data):
+                width = dpg.get_item_width(dpg.get_item_alias(app_data))
+                percent = width / SCREEN_WIDTH
+                NODE_WINDOW_PERCENT[0] = percent
+                APP.resize_windows_callback(None, None, None)
+
+            with dpg.item_handler_registry() as handler:
+                dpg.add_item_resize_handler(callback=set_window_percent)
+            dpg.bind_item_handler_registry(self.tag, handler)
+
+            with dpg.group(horizontal=True):
+                with dpg.child_window(
+                        width=WINDOW_INFO["node_size"][0]//2,
+                    ):
+                    with dpg.table(
+                        header_row=True,
+                        tag="clip_parameters.input.table.gui",
+                        policy=dpg.mvTable_SizingStretchProp,
+                    ):
+                        dpg.add_table_column(
+                            label="Input", tag=f"clip_parameters.input.table.column.input"
+                        )
+                        dpg.add_table_column(
+                            label="Type", tag=f"clip_parameters.input.table.column.type"
+                        )
+                        dpg.add_table_column(
+                            label="Min", tag=f"clip_parameters.input.table.column.min"
+                        )
+                        dpg.add_table_column(
+                            label="Max", tag=f"clip_parameters.input.table.column.max"
+                        )
+                        dpg.add_table_column(
+                            label="Value", tag=f"clip_parameters.input.table.column.output"
+                        )
+                        dpg.add_table_column(tag=f"clip_parameters.input.table.column.edit", width=10)
+
+                        for input_index, input_channel in enumerate(clip.inputs):
+                            if input_channel.deleted:
+                                continue
+                            with dpg.table_row():
+                                dpg.add_text(default_value=input_channel.name)
+                                dpg.add_text(default_value=input_channel.dtype)
+                                dpg.add_text(default_value=input_channel.get_parameter("min").value)
+                                dpg.add_text(default_value=input_channel.get_parameter("max").value)
+
+                                # Input Knob
+                                add_func = (
+                                    dpg.add_drag_float
+                                    if input_channel.dtype == "float"
+                                    else dpg.add_drag_int
+                                )
+                                add_func(
+                                    min_value=input_channel.get_parameter("min").value,
+                                    max_value=input_channel.get_parameter("max").value,
+                                    tag=f"{input_channel.id}.value.todo",
+                                    width=75,
+                                    callback=APP.update_input_channel_ext_value_callback,
+                                    user_data=input_channel,
+                                )
+
+                                # Edit
+                                dpg.add_button(label="Edit")
+
+                with dpg.child_window():
+                    with dpg.table(
+                        header_row=True,
+                        tag="clip_parameters.output.table.gui",
+                        policy=dpg.mvTable_SizingStretchProp,
+                    ):
+                        dpg.add_table_column(
+                            label="Output", tag=f"clip_parameters.output.table.column.input"
+                        )
+                        dpg.add_table_column(
+                            label="Value", tag=f"clip_parameters.output.table.column.type"
+                        )
+                        for output_index, output in enumerate(clip.outputs):
+                            if output.deleted:
+                                continue
+
+                            def add_output_row(channel):
+                                with dpg.table_row():
+                                    dpg.add_text(
+                                        default_value=f"[{channel.dmx_address}] {channel.name}",
+                                    )
+                                    dpg.add_input_int(
+                                        tag=get_output_node_value_tag(clip, channel)+".todo",
+                                        width=50,
+                                        readonly=True,
+                                        step=0,
+                                    )
+
+                            if isinstance(output, model.DmxOutputGroup):
+                                for i, output_channel in enumerate(output.outputs):
+                                    add_output_row(output_channel)
+                            else:
+                                add_output_row(output)
+

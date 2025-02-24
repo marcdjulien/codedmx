@@ -291,6 +291,10 @@ class Application:
         logging.debug("Creating clip window")
         self.clip_window = gui.ClipWindow(self.state)
 
+        #### Create Clip Parameters Window ####
+        logging.debug("Creating clip parameters window")
+        self.clip_params_window = gui.ClipParametersWindow(self.state)
+
         #### Mouse/Key Handlers ####
         logging.debug("Installing mouse/key handlers")
         with dpg.handler_registry():
@@ -3627,7 +3631,7 @@ class Application:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NodeDMX [BETA]")
     parser.add_argument(
-        "--project", default=None, dest="project_file_path", help="Project file path."
+        "--project", default="C:\\Users\\marcd\\Desktop\\Code\\nodedmx\\projects\\transcedent5-v2\\transcedent5-v2.ndmx", dest="project_file_path", help="Project file path."
     )
 
     parser.add_argument(

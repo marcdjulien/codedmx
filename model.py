@@ -1609,8 +1609,11 @@ def midi_value(msg):
     if msg.type == "control_change":
         value = msg.value
         note_control = msg.control
-    elif msg.type in ["note_on", "note_off"]:
+    elif msg.type in ["note_on"]:
         value = msg.velocity
+        note_control = msg.note
+    elif msg.type in ["note_off"]:
+        value = 0
         note_control = msg.note
     elif msg.type == "pitchwheel":
         value = msg.pitch
