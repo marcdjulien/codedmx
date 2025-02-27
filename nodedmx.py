@@ -78,8 +78,8 @@ def get_plot_tag(input_channel):
     return f"{input_channel.id}.plot"
 
 
-def get_node_tag(clip, obj):
-    return f"{get_node_editor_tag(clip)}.{obj.id}.node"
+def get_node_tag(obj):
+    return f"{obj.id}.node"
 
 
 def get_node_window_tag(clip):
@@ -232,11 +232,40 @@ class Application:
         logging.debug("Create dearpygui context")
         dpg.create_context()
 
-        # Global Variables
-        logging.debug("Initializing global value registry")
         with dpg.value_registry():
+            # Global Variables
+            logging.debug("Initializing global value registry")
             dpg.add_string_value(default_value="", tag="last_midi_message")
             dpg.add_int_value(default_value=0, tag="n_global_storage_elements")
+
+            # State Variables
+            logging.debug("Initializing state value registry")
+            for input_channel in self.get_all_valid_clip_input_channels():
+                tag = f"{input_channel.id}.value"
+                logging.debug(f"\t{tag}")
+                add_func = {
+                    "float": dpg.add_float_value,
+                    "int": dpg.add_int_value,
+                    "bool": dpg.add_int_value,
+                    "any": dpg.add_float_value,
+                    "color": dpg.add_int4_value,
+                    "midi": dpg.add_int_value,
+                    "osc_input_float": dpg.add_float_value,
+                    "osc_input_int": dpg.add_int_value,
+                    "button": dpg.add_int_value,
+                }[input_channel.input_type]
+                add_func(tag=tag)
+
+            for output_channel in self.get_all_valid_clip_output_channels():
+                tag = f"{output_channel.id}.value"
+                logging.debug(f"\t{tag}")
+                add_func = {
+                    "int": dpg.add_float_value,
+                    "int": dpg.add_int_value,
+                    "bool": dpg.add_int_value,
+                    "any": dpg.add_float_value,
+                }[output_channel.dtype]
+                add_func(tag=tag)
 
         logging.debug("Initializing window size")
         self.update_window_size_info(gui.SCREEN_WIDTH, gui.SCREEN_HEIGHT)
@@ -287,13 +316,13 @@ class Application:
         for track in self.state.tracks:
             self.create_code_editor_window(track)
 
-        #### Create Clip Window ####
-        logging.debug("Creating clip window")
-        self.clip_window = gui.ClipWindow(self.state)
-
         #### Create Clip Parameters Window ####
         logging.debug("Creating clip parameters window")
         self.clip_params_window = gui.ClipParametersWindow(self.state)
+
+        #### Create Clip Window ####
+        logging.debug("Creating clip window")
+        self.clip_window = gui.ClipWindow(self.state)
 
         #### Mouse/Key Handlers ####
         logging.debug("Installing mouse/key handlers")
@@ -329,10 +358,23 @@ class Application:
                 self.state, track
             )
 
+        # Automation Windows
+        logging.debug("Creating Automation Windows")
+        for input_channel in self.get_all_valid_clip_input_channels():
+            if isinstance(input_channel, model.AutomatableSourceNode):
+                self.create_automation_input_channel_window(
+                    input_channel,
+                )
+            else:
+                self.create_input_channel_window(
+                    input_channel,
+                )
+
         self.restore_gui_state()
 
         dpg.setup_dearpygui()
         dpg.show_viewport()
+        dpg.show_item_registry()
 
     def main_loop(self):
         logging.debug("Starting main loop")
@@ -352,6 +394,8 @@ class Application:
                 dpg.render_dearpygui_frame()
             dpg.destroy_context()
         except Exception as e:
+            import traceback
+            logger.warning(traceback.format_exc())
             logger.warning(e)
             if self.debug:
                 raise e
@@ -425,8 +469,8 @@ class Application:
             "code_size": code_window_size,
             "console_pos": console_window_pos,
             "console_size": console_window_size,
-            "node_pos": node_window_pos,
-            "node_size": node_window_size,
+            "clip_parameters_pos": node_window_pos,
+            "clip_parameters_size": node_window_size,
         }
 
     def update_clip_window(self):
@@ -546,23 +590,25 @@ class Application:
                 user_data=preset,
             )
 
-        with dpg.theme(tag=menu_theme):
-            with dpg.theme_component(dpg.mvAll):
-                dpg.add_theme_color(
-                    tag=f"{menu_theme}.text_color",
-                    target=dpg.mvThemeCol_Text,
-                    value=[255, 255, 255, 255],
-                    category=dpg.mvThemeCat_Core,
-                )
-                dpg.add_theme_color(
-                    tag=f"{menu_theme}.button_bg_color",
-                    target=dpg.mvThemeCol_Border,
-                    value=[255, 255, 255, 255],
-                    category=dpg.mvThemeCat_Core,
-                )
-        dpg.bind_item_theme(preset_menu_bar, menu_theme)
+        # TODO: Should separate creating the theme and adding it to menu
+        if not dpg.does_item_exist(menu_theme):
+            with dpg.theme(tag=menu_theme):
+                with dpg.theme_component(dpg.mvAll):
+                    dpg.add_theme_color(
+                        tag=f"{menu_theme}.text_color",
+                        target=dpg.mvThemeCol_Text,
+                        value=[255, 255, 255, 255],
+                        category=dpg.mvThemeCat_Core,
+                    )
+                    dpg.add_theme_color(
+                        tag=f"{menu_theme}.button_bg_color",
+                        target=dpg.mvThemeCol_Border,
+                        value=[255, 255, 255, 255],
+                        category=dpg.mvThemeCat_Core,
+                    )
+            dpg.bind_item_theme(preset_menu_bar, menu_theme)
 
-    def create_automation_window(self, clip, input_channel):
+    def create_automation_input_channel_window(self, input_channel):
         parent = get_source_node_window_tag(input_channel)
         with dpg.window(
             tag=parent,
@@ -878,7 +924,7 @@ class Application:
         code_window = gui.CodeWindow(self.state, obj)
         self.tags["hide_on_clip_selection"].append(code_window.tag)
 
-    def create_source_node_window(self, clip, input_channel):
+    def create_input_channel_window(self, input_channel):
         parent = get_source_node_window_tag(input_channel)
         self.tags["hide_on_clip_selection"].append(parent)
 
@@ -906,7 +952,7 @@ class Application:
                 no_title_bar=True,
             ) as window:
                 default_color = input_channel.get()
-                node_theme = get_node_tag(clip, input_channel) + ".theme"
+                node_theme = get_node_tag(input_channel) + ".theme"
                 with dpg.theme(tag=node_theme):
                     with dpg.theme_component(dpg.mvAll):
                         dpg.add_theme_color(
@@ -927,7 +973,12 @@ class Application:
                             value=default_color,
                             category=dpg.mvThemeCat_Nodes,
                         )
-                dpg.bind_item_theme(get_node_tag(clip, input_channel), node_theme)
+                        dpg.add_theme_color(
+                            tag=f"{node_theme}.row_bg",
+                            target=dpg.mvThemeCol_Button,
+                            value=default_color,
+                            category=dpg.mvThemeCat_Core,
+                        )
                 dpg.add_color_picker(
                     width=height * 0.8,
                     height=height,
@@ -1559,7 +1610,21 @@ class Application:
                     src_channels.append(input_channel)
         return src_channels
 
-    def get_all_valid_track_output_channels(self, clip):
+    def get_all_valid_clip_output_channels(self):
+        dst_channels = []
+        found = set()
+        for track in self.state.tracks:
+            for clip in track.clips:
+                if clip is None:
+                    continue
+                for output_channel in self.get_all_valid_track_output_channels_for_clip(clip):
+                    if output_channel.deleted or output_channel.id in found:
+                        continue
+                    dst_channels.append(output_channel)
+                    found.add(output_channel.id)
+        return dst_channels
+
+    def get_all_valid_track_output_channels_for_clip(self, clip):
         output_channels = []
         for output_channel in clip.outputs:
             if output_channel.deleted:
@@ -1603,10 +1668,7 @@ class Application:
         if util.valid(c_active_clip):
             # This is only setting the GUI value, so we only need to update the active clip.
             for dst_channel in self.get_all_valid_dst_channels(c_active_clip):
-                if hasattr(dst_channel, "dmx_address"):
-                    tag = get_output_node_value_tag(c_active_clip, dst_channel)
-                else:
-                    tag = f"{dst_channel.id}.value"
+                tag = f"{dst_channel.id}.value"
                 dpg.set_value(tag, dst_channel.get())
 
             # This is only setting the GUI value, so we only need to update the active clip.
@@ -1614,12 +1676,12 @@ class Application:
                 tag = f"{src_channel.id}.value"
                 dpg.set_value(tag, src_channel.get())
                 if src_channel.input_type == "color":
-                    # Update the node's color
-                    node_theme = get_node_tag(c_active_clip, src_channel) + ".theme"
+                    node_theme = get_node_tag(src_channel) + ".theme"
                     rgb = src_channel.get()
                     dpg.configure_item(f"{node_theme}.color1", value=rgb)
                     dpg.configure_item(f"{node_theme}.color2", value=rgb)
                     dpg.configure_item(f"{node_theme}.color3", value=rgb)
+                    dpg.configure_item(f"{node_theme}.row_bg", value=rgb)
 
         # Update automation points
         if (
@@ -1737,7 +1799,10 @@ class Application:
         self.console_window.update()
 
     def mouse_inside_window(self, window_tag):
-        window_x, window_y = dpg.get_item_pos(window_tag)
+        try:
+            window_x, window_y = dpg.get_item_pos(window_tag)
+        except:
+            return False
         window_x2, window_y2 = window_x + dpg.get_item_width(
             window_tag
         ), window_y + dpg.get_item_height(window_tag)
@@ -2008,7 +2073,7 @@ class Application:
                 )
 
             # Create Automation Editor
-            self.create_source_node_window(
+            self.create_input_channel_window(
                 clip,
                 input_channel,
             )
@@ -2144,8 +2209,7 @@ class Application:
                 )
 
             # Create Automation Editor
-            self.create_automation_window(
-                clip,
+            self.create_automation_input_channel_window(
                 input_channel,
             )
 
@@ -2569,11 +2633,12 @@ class Application:
                 user_data=(track, output_channel_group),
             )
 
+        # TODO: Remove
         # Add a Node to each clip's node editor
-        for clip in track.clips:
-            if clip is None:
-                continue
-            self.create_output_group_node(clip, output_channel_group)
+        #for clip in track.clips:
+        #    if clip is None:
+        #        continue
+        #    self.create_output_group_node(clip, output_channel_group)
 
     def create_viewport_menu_bar(self):
         def save_callback(sender, app_data):
@@ -3207,16 +3272,9 @@ class Application:
         dpg.set_item_height("console.gui.window", gui.WINDOW_INFO["console_size"][1])
 
         # Node Windows
-        for track in self.state.tracks:
-            resize_code_window(track)
-            for clip in track.clips:
-                if util.valid(clip):
-                    window_tag = get_node_window_tag(clip)
-                    if not dpg.does_item_exist(window_tag):
-                        continue
-                    dpg.set_item_pos(window_tag, gui.WINDOW_INFO["node_pos"])
-                    dpg.set_item_width(window_tag, gui.WINDOW_INFO["node_size"][0])
-                    dpg.set_item_height(window_tag, gui.WINDOW_INFO["node_size"][1])
+        dpg.set_item_pos("clip_parameters.gui.window", gui.WINDOW_INFO["clip_parameters_pos"])
+        dpg.set_item_width("clip_parameters.gui.window", gui.WINDOW_INFO["clip_parameters_size"][0])
+        dpg.set_item_height("clip_parameters.gui.window", gui.WINDOW_INFO["clip_parameters_size"][1])
 
     def open_menu_callback(self):
         dpg.configure_item("open_file_dialog", show=True)
@@ -3582,11 +3640,12 @@ class Application:
                     clip.code.reload()
 
     def restore_gui_state(self):
-        for tag, pos in self.gui_state["node_positions"].items():
-            try:
-                dpg.set_item_pos(tag, pos)
-            except:
-                pass
+        # TODO: Remove
+        #for tag, pos in self.gui_state["node_positions"].items():
+        #    try:
+        #        dpg.set_item_pos(tag, pos)
+        #    except:
+        #        pass
         for inout in ["inputs", "outputs"]:
             for i, args in enumerate(self.gui_state["io_args"][inout]):
                 if not util.valid(args):
@@ -3601,9 +3660,10 @@ class Application:
                 dpg.configure_item(
                     f"io.{inout}.table.{i}.type", label=io_type_class.nice_title
                 )
-
-        for theme_tag, color in self.gui_state["clip_preset_themes"].items():
-            dpg.configure_item(theme_tag, value=color)
+        # TODO: Remove
+        #for theme_tag, color in self.gui_state["clip_preset_themes"].items():
+        #    print(theme_tag)
+        #    dpg.configure_item(theme_tag, value=color)
 
     def save_last_active_clip(self):
         if util.valid(self._active_track) and util.valid(self._active_clip):
@@ -3632,6 +3692,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NodeDMX [BETA]")
     parser.add_argument(
         "--project", default="C:\\Users\\marcd\\Desktop\\Code\\nodedmx\\projects\\transcedent5-v2\\transcedent5-v2.ndmx", dest="project_file_path", help="Project file path."
+        #"--project", default=None, dest="project_file_path", help="Project file path."
     )
 
     parser.add_argument(
