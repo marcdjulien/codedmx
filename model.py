@@ -152,10 +152,7 @@ class Channel(Identifier):
         self.name = kwargs.get("name", "Channel").replace(" ", "")
 
     def get(self):
-        try:
-            return cast[self.dtype](self._value)
-        except:
-            return 0
+        return cast[self.dtype](self._value)
 
     def set(self, value):
         self._value = value
@@ -373,7 +370,12 @@ class AutomatableSourceNode(SourceNode):
         self.last_beat = 0
         self.is_constant = False
 
+        self.history = [self.get()]*100
+
     def update(self, clip_beat):
+        self.history.pop(0)
+        self.history.append(self.get())
+
         if self.active_automation is None:
             return
 
@@ -407,6 +409,7 @@ class AutomatableSourceNode(SourceNode):
         return self.ext_channel.get()
 
     def ext_set(self, value):
+        # TODO: Use clamp
         value = max(self.min_parameter.value, value)
         value = min(self.max_parameter.value, value)
         self.ext_channel.set(value)
@@ -595,9 +598,6 @@ class ColorNode(SourceNode):
     def set(self, value):
         self.channel.set(value)
 
-    def update_parameter(self, index, value):
-        return super().update_parameter(index, value)
-
 
 class ButtonNode(SourceNode):
     nice_title = "Button"
@@ -607,18 +607,9 @@ class ButtonNode(SourceNode):
         kwargs.setdefault("size", 1)
         super().__init__(**kwargs)
         self.input_type = "button"
-        self.value_parameter = Parameter("Value", value=False, dtype="bool")
-        self.add_parameter(self.value_parameter)
 
-    def update(self, clip_beat):
-        self.channel.set(int(self.value_parameter.value))
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.value_parameter:
-            self.parameters[index].value = value.lower() == "true"
-            return True
-        else:
-            return super().update_parameter(index, value)
+    def set(self, value):
+        self.channel.set(value)
 
 
 class OscInput(AutomatableSourceNode):
@@ -1662,6 +1653,8 @@ class MidiInputDevice(IO):
                 for other_channel in channels:
                     if channel == other_channel:
                         self.channel_map[midi_channel][note_control].remove(channel)
+                        channel.get_parameter("device").value = ""
+                        channel.get_parameter("id").value = ""
                         break
 
     def reset(self):
@@ -1678,7 +1671,9 @@ class MidiInputDevice(IO):
             and note_control in self.channel_map[midi_channel]
         ):
             for channel in self.channel_map[midi_channel][note_control]:
-                channel.ext_set(value)
+                # TODO: Test this
+                # MIDI values are 0-127, scale to 255.
+                channel.ext_set(2*value)
 
         if value >= 127:
             STATE.trigger_manager.fire_triggers(
@@ -2057,9 +2052,7 @@ class ProgramState(Identifier):
             return Result(True, new_output_group)
 
         elif cmd == "delete_node":
-            # TODO: Not using clip
-            clip_id = toks[1]
-            obj_id = toks[2]
+            obj_id = toks[1]
             obj = self.get_obj(obj_id)
             obj.deleted = True
             return Result(True)
@@ -2404,6 +2397,7 @@ ALL_OUTPUT_TYPES = [
 
 STATE = None
 GlobalStorage = GlobalCodeStorage()
+Global = GlobalStorage
 
 # Weird hack.
 # Without this, the program will hang for several seconds

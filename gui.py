@@ -119,11 +119,11 @@ class SelectClip(GuiAction):
 
         self.app._active_track = track
         self.app._active_clip = clip
+        self.app._active_clip_slot = None
 
         for tag in self.app.tags["hide_on_clip_selection"]:
             dpg.configure_item(tag, show=False)
-        # TODO: Remove
-        #dpg.configure_item(get_node_window_tag(clip), show=True)
+
         if self.app.code_view == CLIP_VIEW:
             dpg.configure_item(get_code_window_tag(clip), show=True)
         elif self.app.code_view == TRACK_VIEW:
@@ -235,10 +235,9 @@ class CreateNewClip(GuiAction):
         # Create the properties window
         self.create_clip_properties_window(clip)
 
-        # Add the associated node and code editor
-        #self.create_node_editor_window(clip)
+        # Add the associated code editor
         self.app.create_code_editor_window(clip)
-        self.app.resize_windows_callback(None, None, None)
+        #self.app.resize_windows_callback(None, None, None)
 
     def create_clip_properties_window(self, clip):
         window_tag = get_properties_window_tag(clip)
@@ -302,94 +301,6 @@ class CreateNewClip(GuiAction):
                             callback=cancel_properties_callback,
                             user_data=clip,
                         )
-
-    def create_node_editor_window(self, clip):
-        logging.debug("Creating Node Editor Window (%s)", clip.id)
-        window_tag = get_node_window_tag(clip)
-        self.app.tags["hide_on_clip_selection"].append(window_tag)
-
-        with dpg.window(
-            tag=window_tag,
-            label=f"Node Window | {clip.name}",
-            width=WINDOW_INFO["node_size"][0],
-            height=WINDOW_INFO["node_size"][1],
-            pos=WINDOW_INFO["node_pos"],
-            no_title_bar=True,
-            no_move=True,
-        ) as window:
-            # Node Editor
-            node_editor_tag = get_node_editor_tag(clip)
-            dpg.add_node_editor(
-                tag=node_editor_tag,
-                user_data=("create", clip),
-                minimap=True,
-                minimap_location=dpg.mvNodeMiniMap_Location_BottomRight,
-            )
-
-            menu_tag = f"{window_tag}.menu_bar"
-            with dpg.menu_bar(tag=menu_tag):
-                self.app.create_node_menu(menu_tag, clip)
-
-                preset_menu_tag = f"{menu_tag}.preset_menu"
-                with dpg.menu(label="Presets", tag=preset_menu_tag):
-                    dpg.add_menu_item(
-                        label="New Preset",
-                        callback=self.app.create_and_show_save_presets_window,
-                        user_data=(clip, None),
-                    )
-                    dpg.add_menu_item(
-                        label="Reorder",
-                        callback=self.app.create_and_show_reorder_window,
-                        user_data=(
-                            clip.presets,
-                            preset_menu_tag,
-                            get_preset_menu_bar_tag,
-                        ),
-                    )
-                    for preset in clip.presets:
-                        self.app.add_clip_preset_to_menu(clip, preset)
-
-                dpg.add_menu_item(
-                    label="Show All Automation",
-                    callback=action_callback,
-                    user_data=ShowWindow(APP.clip_automation_presets_window),
-                )
-
-            def set_window_percent(sender, app_data, user_data):
-                width = dpg.get_item_width(dpg.get_item_alias(app_data))
-                percent = width / SCREEN_WIDTH
-                NODE_WINDOW_PERCENT[0] = percent
-                self.app.resize_windows_callback(None, None, None)
-
-            with dpg.item_handler_registry() as handler:
-                dpg.add_item_resize_handler(callback=set_window_percent)
-            dpg.bind_item_handler_registry(window_tag, handler)
-
-        ###############
-        ### Restore ###
-        ###############
-
-        # Popup window for adding node elements
-        popup_window_tag = get_node_window_tag(clip) + ".popup_menu"
-        with dpg.window(tag=popup_window_tag, show=False, no_title_bar=True):
-            self.app.create_node_menu(popup_window_tag, clip)
-
-        for input_index, input_channel in enumerate(clip.inputs):
-            if input_channel.deleted:
-                continue
-            self.app.add_source_node_callback(
-                sender=None,
-                app_data=None,
-                user_data=("restore", (clip, input_channel), False),
-            )
-
-        for output_index, output_channel in enumerate(clip.outputs):
-            if output_channel.deleted:
-                continue
-            if isinstance(output_channel, model.DmxOutputGroup):
-                self.app.create_output_group_node(clip, output_channel)
-            else:
-                self.app.create_output_node(clip, output_channel)
 
 
 class PasteClip(GuiAction):
@@ -782,7 +693,7 @@ class InspectorWindow(Window):
         dpg.configure_item(
             "inspector.series",
             x=self.x_values,
-            y=APP._active_output_channel.history[-1 - len(self.x_values) : -1],
+            y=APP._active_input_channel.history[-1 - len(self.x_values) : -1],
         )
 
 
@@ -1954,7 +1865,7 @@ class CodeWindow(FixedWindow):
         else:  # State
             dpg.bind_item_theme(self.tag + ".text", "code_editor.global.theme")
 
-
+# TODO: Not being used
 class AutomationWindow(FixedWindow):
     def __init__(self, state, clip, input_channel):
         self.clip = clip
@@ -2298,7 +2209,7 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
 
                 # TODO: The node menu should just add to the current active clip
                 # so that we don't need a new menu for each clip
-                APP.create_node_menu(menu_tag, clip)
+                APP.create_input_channel_menu(menu_tag, clip)
 
                 preset_menu_tag = f"{menu_tag}.preset_menu"
                 with dpg.menu(label="Presets", tag=preset_menu_tag):
@@ -2327,103 +2238,193 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                 )
 
             def set_window_percent(sender, app_data, user_data):
-                width = dpg.get_item_width(dpg.get_item_alias(app_data))
-                percent = width / SCREEN_WIDTH
-                NODE_WINDOW_PERCENT[0] = percent
-                APP.resize_windows_callback(None, None, None)
+                # TODO: try/except here is s hack. Figure out how this
+                # causes an exception when selecting Presets in Clip Preset Window
+                try:
+                    width = dpg.get_item_width(dpg.get_item_alias(app_data))
+                    percent = width / SCREEN_WIDTH
+                    NODE_WINDOW_PERCENT[0] = percent
+                    APP.resize_windows_callback(None, None, None)
+                except Exception as e:
+                    logger.exception(e)
 
             with dpg.item_handler_registry() as handler:
                 dpg.add_item_resize_handler(callback=set_window_percent)
             dpg.bind_item_handler_registry(self.tag, handler)
 
             with dpg.group(horizontal=True):
+                width = 2*WINDOW_INFO["clip_parameters_size"][0]//3
                 with dpg.child_window(
-                        width=WINDOW_INFO["clip_parameters_size"][0]//2,
-                    ):
-                    with dpg.table(
-                        header_row=True,
-                        tag="clip_parameters.input.table.gui",
-                        policy=dpg.mvTable_SizingStretchProp,
-                    ):
-                        dpg.add_table_column(
-                            label="Input", tag=f"clip_parameters.input.table.column.input"
-                        )
-                        dpg.add_table_column(
-                            label="Type", tag=f"clip_parameters.input.table.column.type"
-                        )
-                        dpg.add_table_column(
-                            label="Min", tag=f"clip_parameters.input.table.column.min"
-                        )
-                        dpg.add_table_column(
-                            label="Max", tag=f"clip_parameters.input.table.column.max"
-                        )
-                        dpg.add_table_column(
-                            label="Value", tag=f"clip_parameters.input.table.column.output"
-                        )
-                        dpg.add_table_column(tag=f"clip_parameters.input.table.column.edit", width=10)
+                    width=width,
+                    no_scrollbar=True,
+                ):
+                    with dpg.group(tag="input_child_window_group", width=width, height=1000):
+                        with dpg.table(
+                            header_row=True,
+                            tag="clip_parameters.input.table.gui",
+                            policy=dpg.mvTable_SizingFixedFit,
+                        ):
+                            dpg.add_table_column(
+                                label="Input",
+                                tag=f"clip_parameters.input.table.column.input",
+                                width_stretch=True,
+                                init_width_or_weight=0.2,
+                            )
+                            dpg.add_table_column(
+                                label="Type",
+                                tag=f"clip_parameters.input.table.column.type",
+                                width_stretch=True,
+                                init_width_or_weight=0.1,
+                            )
+                            dpg.add_table_column(
+                                label="Value",
+                                tag=f"clip_parameters.input.table.column.output",
+                                width_stretch=True,
+                                init_width_or_weight=0.2,
+                            )
+                            dpg.add_table_column(
+                                label="Parameters",
+                                tag=f"clip_parameters.input.table.column.parameters",
+                                width_stretch=True,
+                                init_width_or_weight=0.4,                        )
+                            dpg.add_table_column(
+                                tag=f"clip_parameters.input.table.column.edit",
+                                width_stretch=True,
+                                init_width_or_weight=0.1,                        )
 
-                        for input_index, input_channel in enumerate(clip.inputs):
-                            if input_channel.deleted:
-                                continue
+                            for input_index, input_channel in enumerate(clip.inputs):
+                                if input_channel.deleted:
+                                    continue
 
-                            with dpg.table_row() as row:
-                                # When user clicks on the node, bring up the automation window.
-                                # TODO: Need to add right click menu options somewhere
-                                def input_selected_callback(sender, app_data, user_data):
-                                    clip, input_channel = user_data
-                                    APP._active_input_channel = input_channel
-                                    for other_input_channel in clip.inputs:
-                                        if other_input_channel.deleted:
-                                            continue
+                                with dpg.table_row() as row:
+                                    # When user clicks on the node, bring up the automation window.
+                                    def input_selected_callback(sender, app_data, user_data):
+                                        clip, ic = user_data
+                                        APP._active_input_channel = ic
+                                        for other_channel in clip.inputs:
+                                            if other_channel.deleted or ic == other_channel:
+                                                continue
+                                            dpg.configure_item(
+                                                get_source_node_window_tag(other_channel), show=False
+                                            )
+                                            if other_channel.input_type == "color":
+                                                dpg.bind_item_theme(f"{other_channel.id}.name_button", get_node_tag(other_channel) + ".theme")
+                                            else:
+                                                dpg.bind_item_theme(f"{other_channel.id}.name_button", "not_selected_preset.theme")
+
                                         dpg.configure_item(
-                                            get_source_node_window_tag(other_input_channel), show=False
+                                            get_source_node_window_tag(ic),
+                                            show=True,
                                         )
-                                    dpg.configure_item(
-                                        get_source_node_window_tag(APP._active_input_channel),
-                                        show=True,
-                                    )
-                                    APP.reset_automation_plot(input_channel)
+                                        dpg.bind_item_theme(f"{ic.id}.name_button", "selected_preset.theme")
+                                        APP.reset_automation_plot(ic)
 
-                                if input_channel.input_type in ["int", "float", "bool", "midi"]:
-                                    dpg.add_button(label=input_channel.name, callback=input_selected_callback, user_data=(clip, input_channel))
+                                    if input_channel.input_type in ["int", "float", "bool", "midi", "osc_input_int", "osc_input_float"]:
+                                        dpg.add_button(
+                                            tag=f"{input_channel.id}.name_button",
+                                            label=input_channel.name,
+                                            callback=input_selected_callback,
+                                            user_data=(clip, input_channel)
+                                        )
 
-                                    dpg.add_text(default_value=input_channel.dtype)
-                                    dpg.add_text(default_value=input_channel.get_parameter("min").value)
-                                    dpg.add_text(default_value=input_channel.get_parameter("max").value)
+                                        dpg.add_text(default_value=input_channel.input_type)
 
-                                    # Input Knob
-                                    add_func = (
-                                        dpg.add_drag_float
-                                        if input_channel.dtype == "float"
-                                        else dpg.add_drag_int
-                                    )
-                                    add_func(
-                                        min_value=input_channel.get_parameter("min").value,
-                                        max_value=input_channel.get_parameter("max").value,
-                                        source=f"{input_channel.id}.value",
-                                        width=75,
-                                        callback=APP.update_input_channel_ext_value_callback,
-                                        user_data=input_channel,
-                                    )
-                                elif input_channel.input_type == "color":
-                                    button_id = dpg.add_button(label=input_channel.name, callback=input_selected_callback, user_data=(clip, input_channel))
-                                    dpg.add_text(default_value="color")
-                                    dpg.add_text(default_value="N/A")
-                                    dpg.add_text(default_value="N/A")
-                                    intx_id = dpg.add_drag_intx(
-                                        source=f"{input_channel.id}.value",
-                                        width=75,
-                                        callback=APP.update_input_channel_ext_value_callback,
-                                        user_data=input_channel,
-                                        size=4,
-                                    )
+                                        with dpg.group():
+                                            if input_channel.mode == "automation":
+                                                dpg.add_simple_plot(min_scale=-1.0, max_scale=1.0, height=20, width=75, tag=f"{input_channel.id}.mini_plot")
+                                            else:
+                                                add_func = (
+                                                    dpg.add_drag_float
+                                                    if input_channel.dtype == "float"
+                                                    else dpg.add_drag_int
+                                                )
+                                                add_func(
+                                                    min_value=input_channel.get_parameter("min").value,
+                                                    max_value=input_channel.get_parameter("max").value,
+                                                    source=f"{input_channel.id}.value",
+                                                    width=75,
+                                                    callback=APP.update_input_channel_ext_value_callback,
+                                                    user_data=input_channel,
+                                                )
 
-                                    dpg.bind_item_theme(button_id, get_node_tag(input_channel) + ".theme")
+                                    elif input_channel.input_type == "color":
+                                        dpg.add_button(
+                                            tag=f"{input_channel.id}.name_button",
+                                            label=input_channel.name,
+                                            callback=input_selected_callback,
+                                            user_data=(clip, input_channel)
+                                        )
+                                        dpg.bind_item_theme(f"{input_channel.id}.name_button", get_node_tag(input_channel) + ".theme")
 
-                                # Edit
-                                dpg.add_button(label="Edit")
+                                        dpg.add_text(default_value="color")
 
-                with dpg.child_window():
+                                        def update_color(sender, app_data, user_data):
+                                            # Color picker returns values between 0 and 1. Convert
+                                            # to 255 int value.
+                                            rgb = [int(util.clamp(v * 255, 0, 255)) for v in app_data]
+                                            APP.update_channel_value_callback(sender, app_data, user_data)
+
+                                        dpg.add_drag_intx(
+                                            source=f"{input_channel.id}.value",
+                                            width=100,
+                                            callback=update_color,
+                                            user_data=input_channel,
+                                            max_value=255,
+                                            size=4,
+                                        )
+
+                                    elif input_channel.input_type == "button":
+                                        dpg.add_button(
+                                            tag=f"{input_channel.id}.name_button",
+                                            label=input_channel.name,
+                                            callback=input_selected_callback,
+                                            user_data=(clip, input_channel)
+                                        )
+                                        dpg.add_text(default_value="button")
+
+                                        def update_button(sender, app_data, user_data):
+                                            APP.update_channel_value_callback(
+                                                sender,
+                                                int(app_data),
+                                                user_data
+                                            )
+
+                                        dpg.add_checkbox(
+                                            callback=update_button,
+                                            user_data=input_channel,
+                                            default_value=bool(input_channel.get()),
+                                        )
+
+                                    param_strs = []
+                                    for parameter_index, parameter in enumerate(input_channel.parameters):
+                                        if str(parameter.value):
+                                            param_strs.append(f"{parameter.name}: {parameter.value}")
+                                    dpg.add_text(default_value=", ".join(param_strs))
+
+                                    # Edit
+                                    def show_properties_window(sender, app_data, user_data):
+                                        APP._properties_buffer.clear()
+                                        dpg.configure_item(get_properties_window_tag(user_data), show=True)
+                                    dpg.add_button(label="Configure", callback=show_properties_window, user_data=input_channel)
+
+                                    # Right click for input channel name button
+                                    with dpg.popup(f"{input_channel.id}.name_button", mousebutton=1):
+                                        dpg.add_menu_item(
+                                            label="Copy",
+                                        )
+                                        dpg.add_menu_item(
+                                            label="Delete",
+                                            callback=APP.create_and_show_delete_obj_callback,
+                                            user_data=input_channel,
+                                        )
+
+                # Right click for entire window
+                with dpg.popup("input_child_window_group", mousebutton=1):
+                    dpg.add_menu_item(
+                        label="Paste",
+                    )
+
+                with dpg.child_window(no_scrollbar=True):
                     with dpg.table(
                         header_row=True,
                         tag="clip_parameters.output.table.gui",
