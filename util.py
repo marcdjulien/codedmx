@@ -33,3 +33,6 @@ def beats_to_seconds(beat, tempo):
 
 def seconds_to_beats(s, tempo):
     return s * (1.0 / 60.0) * tempo
+
+def beats_to_16th(beat):
+    return beat * 4

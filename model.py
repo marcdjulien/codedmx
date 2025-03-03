@@ -1826,7 +1826,8 @@ class ProgramState(Identifier):
 
         for i in range(N_TRACKS - 1):
             self.tracks.append(Track(f"Track {i}"))
-        self.tracks.append(Track(f"Global", global_track=True))
+        self.global_track = Track(f"Global", global_track=True)
+        self.tracks.append(self.global_track)
 
         self.io_outputs = [None] * 5
         self.io_inputs = [None] * 5
@@ -1932,6 +1933,9 @@ class ProgramState(Identifier):
             new_track.deserialize(track_data)
             self.tracks[i] = new_track
 
+        self.global_track = self.tracks[-1]
+        assert self.global_track.global_track
+
         for i, device_data in enumerate(data["io_inputs"]):
             if device_data is None:
                 continue
@@ -1954,6 +1958,15 @@ class ProgramState(Identifier):
             global_preset = GlobalClipPreset()
             global_preset.deserialize(global_preset_data)
             self.global_presets.append(global_preset)
+
+        # Play each global clip at least once to prepopulate any required vars
+        for clip in self.global_track.clips:
+            if not util.valid(clip):
+                continue
+            self.execute(f"toggle_clip {self.global_track.id} {clip.id}")
+            self.update()
+            self.execute(f"toggle_clip {self.global_track.id} {clip.id}")
+        self.stop()
 
     def duplicate_obj(self, obj):
         data = obj.serialize()

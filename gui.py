@@ -19,8 +19,7 @@ APP = None
 
 SCREEN_WIDTH = 1940
 SCREEN_HEIGHT = 1150
-CLIP_WINDOW_PERCENT = [0.41, 0.45]
-NODE_WINDOW_PERCENT = [0.41, 0.45]
+
 AXIS_MARGIN = 0.025
 WINDOW_INFO = {}
 
@@ -47,6 +46,194 @@ def action_callback(sender, app_data, user_data):
 
 def valid(*objs):
     return all([obj is not None and not getattr(obj, "deleted", False) for obj in objs])
+
+
+class WindowManager:
+    """Manages the positions and size of windows."""
+
+    # Clip window is always 41% x 45% of the top left region
+    CLIP_WINDOW_PERCENT = [0.41, 0.45]
+
+    # Clip param window starts off at 41% x 45% of the bottom left region
+    CLIP_PARAM_WINDOW_PERCENT = [0.41, 0.45]
+
+    def __init__(self, app):
+        self.app = app
+        self.state = app.state
+        self.window_info = {}
+        self.screen_width = SCREEN_WIDTH
+        self.screen_height = SCREEN_HEIGHT
+
+    def resize_all(self):
+        self.resize_windows_callback(None, None, None)
+
+    def update_window_size_info(self, new_width, new_height):
+        self.screen_width = new_width
+        self.screen_height = new_height
+        height_margin = 18
+
+        # Initial window settings for Edit mode.
+        clip_window_pos = (0, 18)
+        clip_window_size = (
+            int(self.CLIP_WINDOW_PERCENT[0] * new_width),
+            int(self.CLIP_WINDOW_PERCENT[1] * new_height),
+        )
+
+        code_window_pos = (clip_window_size[0], 18)
+        code_window_size = (new_width - clip_window_size[0], clip_window_size[1])
+
+        clip_parameters_pos = (0, 18 + clip_window_size[1])
+        clip_parameters_size = (
+            int(self.CLIP_PARAM_WINDOW_PERCENT[0] * new_width),
+            new_height - clip_window_size[1] - height_margin,
+        )
+
+        console_window_pos = (clip_parameters_size[0], 18 + code_window_size[1])
+        console_window_size = (
+            new_width - clip_parameters_size[0],
+            new_height - code_window_size[1] - height_margin,
+        )
+
+        self.window_info["edit"] = {
+            "clip_pos": clip_window_pos,
+            "clip_size": clip_window_size,
+            "code_pos": code_window_pos,
+            "code_size": code_window_size,
+            "console_pos": console_window_pos,
+            "console_size": console_window_size,
+            "clip_parameters_pos": clip_parameters_pos,
+            "clip_parameters_size": clip_parameters_size,
+        }
+
+        # Initial window settings for Performance mode.
+        clip_window_pos = (0, 18)
+        clip_window_size = (
+            int(self.CLIP_WINDOW_PERCENT[0] * new_width),
+            int(self.CLIP_WINDOW_PERCENT[1] * new_height) - height_margin,
+        )
+
+        clip_parameters_pos = (0, 18 + clip_window_size[1])
+        clip_parameters_size = (
+            int(self.CLIP_PARAM_WINDOW_PERCENT[0] * new_width),
+            new_height - clip_window_size[1] - height_margin,
+        )
+
+        right_pane_width = new_width - clip_window_size[0]
+        right_pane_bottom = int(new_height * 0.25)
+
+        clip_preset_pos = (clip_window_size[0], 18)
+        clip_preset_size = (
+            right_pane_width // 2,
+            new_height - right_pane_bottom - height_margin,
+        )
+
+        global_clip_preset_pos = (clip_preset_pos[0]+clip_preset_size[0], 18)
+        global_clip_preset_size = (
+            right_pane_width // 2,
+            new_height - right_pane_bottom - height_margin,
+        )
+
+        clip_automation_pos = (clip_window_size[0], clip_preset_pos[1] + clip_preset_size[1])
+        clip_automation_size = (
+            right_pane_width,
+            right_pane_bottom,
+        )
+
+        self.window_info["performance"] = {
+            "clip_pos": clip_window_pos,
+            "clip_size": clip_window_size,
+            "clip_parameters_pos": clip_parameters_pos,
+            "clip_parameters_size": clip_parameters_size,
+            "clip_preset_pos": clip_preset_pos,
+            "clip_preset_size": clip_preset_size,
+            "global_clip_preset_pos": global_clip_preset_pos,
+            "global_clip_preset_size": global_clip_preset_size,
+            "clip_automation_pos": clip_automation_pos,
+            "clip_automation_size": clip_automation_size,
+        }
+
+    def resize_windows_callback(self, sender, app_data, user_data):
+        if app_data is None:
+            new_width = self.screen_width
+            new_height = self.screen_height
+        else:
+            new_width, new_height = app_data[2:4]
+        self.update_window_size_info(new_width, new_height)
+
+        if self.state.mode == "edit":
+            window_info = self.window_info["edit"]
+
+            # Clip window
+            dpg.set_item_pos("clip.gui.window", window_info["clip_pos"])
+            dpg.set_item_width("clip.gui.window", window_info["clip_size"][0])
+            dpg.set_item_height("clip.gui.window", window_info["clip_size"][1])
+            dpg.configure_item("clip.gui.window", show=True)
+
+            # Code windows
+            window_tag = "code_editor.gui.window"
+            dpg.set_item_pos(window_tag, window_info["code_pos"])
+            dpg.set_item_width(window_tag, window_info["code_size"][0])
+            dpg.set_item_height(window_tag, window_info["code_size"][1])
+            dpg.set_item_width(
+                window_tag + ".text", window_info["code_size"][0] * 0.98
+            )
+            dpg.set_item_height(
+                window_tag + ".text", window_info["code_size"][1] * 0.91
+            )
+            dpg.configure_item(window_tag, show=True)
+
+
+            # Resize automation window
+            for input_channel in self.app.get_all_valid_clip_input_channels():
+                tag = get_source_node_window_tag(input_channel)
+                dpg.set_item_pos(tag, window_info["code_pos"])
+                dpg.set_item_width(tag, window_info["code_size"][0])
+                dpg.set_item_height(tag, window_info["code_size"][1])
+
+            # Console winodws
+            dpg.set_item_pos("console.gui.window", window_info["console_pos"])
+            dpg.set_item_width("console.gui.window", window_info["console_size"][0])
+            dpg.set_item_height("console.gui.window", window_info["console_size"][1])
+            dpg.configure_item("console.gui.window", show=True)
+
+            # Clip Parameters Windows
+            dpg.set_item_pos("clip_parameters.gui.window", window_info["clip_parameters_pos"])
+            dpg.set_item_width("clip_parameters.gui.window", window_info["clip_parameters_size"][0])
+            dpg.set_item_height("clip_parameters.gui.window", window_info["clip_parameters_size"][1])
+            dpg.configure_item("clip_parameters.gui.window", show=True)
+
+        elif self.state.mode == "performance":
+            window_info = self.window_info["performance"]
+
+            # Clip window
+            dpg.set_item_pos("clip.gui.window", window_info["clip_pos"])
+            dpg.set_item_width("clip.gui.window", window_info["clip_size"][0])
+            dpg.set_item_height("clip.gui.window", window_info["clip_size"][1])
+            dpg.configure_item("clip.gui.window", show=True)
+
+            # Clip Preset Window
+            dpg.set_item_pos("clip_preset.gui.window", window_info["clip_preset_pos"])
+            dpg.set_item_width("clip_preset.gui.window", window_info["clip_preset_size"][0])
+            dpg.set_item_height("clip_preset.gui.window", window_info["clip_preset_size"][1])
+            dpg.configure_item("clip_preset.gui.window", show=True)
+
+            # Global Clip Preset Window
+            dpg.set_item_pos("global_preset_window.gui.window", window_info["global_clip_preset_pos"])
+            dpg.set_item_width("global_preset_window.gui.window", window_info["global_clip_preset_size"][0])
+            dpg.set_item_height("global_preset_window.gui.window", window_info["global_clip_preset_size"][1])
+            dpg.configure_item("global_preset_window.gui.window", show=True)
+
+            # Clip Parameters Windows
+            dpg.set_item_pos("clip_parameters.gui.window", window_info["clip_parameters_pos"])
+            dpg.set_item_width("clip_parameters.gui.window", window_info["clip_parameters_size"][0])
+            dpg.set_item_height("clip_parameters.gui.window", window_info["clip_parameters_size"][1])
+            dpg.configure_item("clip_parameters.gui.window", show=True)
+
+            # Clip Automation Windows
+            dpg.set_item_pos("clip_automation.gui.window", window_info["clip_automation_pos"])
+            dpg.set_item_width("clip_automation.gui.window", window_info["clip_automation_size"][0])
+            dpg.set_item_height("clip_automation.gui.window", window_info["clip_automation_size"][1])
+            dpg.configure_item("clip_automation.gui.window", show=True)
 
 
 class GuiAction:
@@ -113,6 +300,9 @@ class SelectClip(GuiAction):
         track = self.params["track"]
         clip = self.params["clip"]
 
+        if self.app._active_clip == clip:
+            return
+
         self.app.save_last_active_clip()
         self.last_track = self.app._active_track
         self.last_clip = self.app._active_clip
@@ -124,16 +314,13 @@ class SelectClip(GuiAction):
         for tag in self.app.tags["hide_on_clip_selection"]:
             dpg.configure_item(tag, show=False)
 
-        if self.app.code_view == CLIP_VIEW:
-            dpg.configure_item(get_code_window_tag(clip), show=True)
-        elif self.app.code_view == TRACK_VIEW:
-            dpg.configure_item(get_code_window_tag(track), show=True)
-        else:
-            dpg.configure_item(get_code_window_tag(self.state), show=True)
+        if self.app.state.mode == "edit":
+            self.app.code_window.show()
 
         self.app.clip_automation_presets_window.reset(clip)
         self.app.help_window.reset()
         self.app.clip_params_window.reset()
+        self.app.code_window.reset()
 
     def undo(self):
         self.app.save_last_active_clip()
@@ -142,7 +329,6 @@ class SelectClip(GuiAction):
 
         for tag in self.app.tags["hide_on_clip_selection"]:
             dpg.configure_item(tag, show=False)
-        dpg.configure_item(get_node_window_tag(self.last_clip), show=True)
 
 
 class SelectInputNode(GuiAction):
@@ -155,8 +341,22 @@ class SelectInputNode(GuiAction):
             dpg.configure_item(
                 get_source_node_window_tag(other_input_channel), show=False
             )
-        dpg.configure_item(get_source_node_window_tag(input_channel), show=True)
-        APP._active_input_channel = input_channel
+            # Set button color
+            if other_input_channel.input_type == "color":
+                dpg.bind_item_theme(f"{other_input_channel.id}.name_button", get_node_tag(other_input_channel) + ".theme")
+            else:
+                dpg.bind_item_theme(f"{other_input_channel.id}.name_button", "not_selected_preset.theme")
+
+        if self.app.state.mode == "edit":
+            dpg.configure_item(get_source_node_window_tag(input_channel), show=True)
+        elif self.app.state.mode == "performance":
+            if input_channel.input_type == "color":
+                dpg.configure_item(get_source_node_window_tag(input_channel), show=True)
+
+        dpg.bind_item_theme(f"{input_channel.id}.name_button", "selected_preset.theme")
+        APP.reset_automation_plot(input_channel)
+
+        self.app._active_input_channel = input_channel
 
 
 class CreateNewClip(GuiAction):
@@ -236,8 +436,7 @@ class CreateNewClip(GuiAction):
         self.create_clip_properties_window(clip)
 
         # Add the associated code editor
-        self.app.create_code_editor_window(clip)
-        #self.app.resize_windows_callback(None, None, None)
+        self.app.code_window.reset()
 
     def create_clip_properties_window(self, clip):
         window_tag = get_properties_window_tag(clip)
@@ -351,10 +550,6 @@ def get_node_editor_tag(clip):
 
 def get_output_configuration_window_tag(track):
     return f"{track.id}.gui.output_configuration_window"
-
-
-def get_io_matrix_window_tag(clip):
-    return f"{clip.id}.gui.io_matrix_window"
 
 
 def get_source_node_window_tag(input_channel, is_id=False):
@@ -476,13 +671,23 @@ class Window:
     def shown(self):
         return dpg.is_item_shown(self.tag)
 
+    def show(self):
+        dpg.configure_item(self.tag, show=True)
+
     def hide(self):
         dpg.configure_item(self.tag, show=False)
 
 
 class FixedWindow(Window):
     def __init__(self, state, *args, **kwargs):
-        super().__init__(state, *args, no_title_bar=True, no_move=True, **kwargs)
+        super().__init__(
+            state,
+            *args,
+            no_move=True,
+            no_collapse=True,
+            no_close=True,
+            **kwargs
+        )
 
 
 class ResettableWindow(Window):
@@ -493,9 +698,9 @@ class ResettableWindow(Window):
     """
 
     def __init__(self, state, *args, **kwargs):
-        self.position = kwargs.get("pos")
-        self.width = kwargs.get("width")
-        self.height = kwargs.get("height")
+        self.position = kwargs.get("pos", [1, 1])
+        self.width = kwargs.get("width", 1)
+        self.height = kwargs.get("height", 1)
         super().__init__(state, *args, **kwargs)
 
     def _create(self, show=None):
@@ -1119,15 +1324,15 @@ class HelpWindow(ResettableWindow):
                 add_text("\n".join(lines[1::]))
 
 
-class PerformancePresetWindow(ResettableWindow):
+class PerformancePresetWindow(ResettableWindow, FixedWindow):
     def __init__(self, state):
         super().__init__(
             state,
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"Clip Presets",
-            tag="performance_preset.gui.window",
+            label=f"<- Input Presets",
+            tag="clip_preset.gui.window",
             show=False,
         )
 
@@ -1139,7 +1344,7 @@ class PerformancePresetWindow(ResettableWindow):
             SelectClip({"track": track, "clip": clip}).execute()
 
         with self.window:
-            dpg.add_button(label="Refresh", callback=self.reset_callback)
+            #dpg.add_button(label="Refresh", callback=self.reset_callback)
             with dpg.table(tag=f"{self.tag}.table"):
                 for i, track in enumerate(self.state.tracks):
                     dpg.add_table_column(label=track.name)
@@ -1155,7 +1360,7 @@ class PerformancePresetWindow(ResettableWindow):
                                         pass
                                 else:
                                     with dpg.group(
-                                        tag=f"{clip.id}.performance_preset_window.group"
+                                        tag=f"{clip.id}.clip_preset_window.group"
                                     ):
                                         if not clip.presets:
                                             continue
@@ -1173,7 +1378,7 @@ class PerformancePresetWindow(ResettableWindow):
                                             )
 
 
-class GlobalPerformancePresetWindow(ResettableWindow):
+class GlobalPerformancePresetWindow(ResettableWindow, FixedWindow):
     def __init__(self, state):
         super().__init__(
             state,
@@ -1520,17 +1725,15 @@ class AddNewTriggerWindow(ResettableWindow):
                 dpg.add_button(label="Cancel", callback=cancel)
 
 
-class ClipAutomationPresetWindow(ResettableWindow):
+class ClipAutomationPresetWindow(ResettableWindow, FixedWindow):
     def __init__(self, state):
         self.clip = None
         super().__init__(
             state,
-            pos=(200, 100),
-            width=600,
-            height=400,
             label=f"Clip Automation Presets",
             tag="clip_automation.gui.window",
             show=False,
+            horizontal_scrollbar=True,
         )
 
     def create(self):
@@ -1555,11 +1758,11 @@ class ClipAutomationPresetWindow(ResettableWindow):
                     )
 
         with self.window:
-            dpg.add_button(
-                label="Refresh",
-                callback=super().reset_callback,
-            )
-            with dpg.table(tag="all_automation.table"):
+            #dpg.add_button(
+            #    label="Refresh",
+            #    callback=super().reset_callback,
+            #)
+            with dpg.table(tag="all_automation.table", policy=dpg.mvTable_SizingFixedFit, scrollX=True):
                 for channel in self.clip.inputs:
                     if not isinstance(channel, model.AutomatableSourceNode):
                         continue
@@ -1600,8 +1803,9 @@ class ClipAutomationPresetWindow(ResettableWindow):
                                     else "not_selected_preset.theme",
                                 )
 
-    def reset(self, clip, show=None):
-        self.clip = clip
+    def reset(self, clip=None, show=None):
+        if clip:
+            self.clip = clip
         super().reset(show=show)
 
 
@@ -1615,6 +1819,7 @@ class ClipWindow(FixedWindow):
             width=800,
             height=520,
             no_resize=True,
+            no_title_bar=True,
         )
 
     def create(self):
@@ -1741,6 +1946,7 @@ class ConsoleWindow(FixedWindow):
             width=SCREEN_WIDTH - 800,
             height=SCREEN_HEIGHT - 520,
             no_resize=True,
+            no_title_bar=True,
         )
 
     def create(self):
@@ -1775,51 +1981,48 @@ class ConsoleWindow(FixedWindow):
         dpg.set_value("io_debug.text", console_text)
 
 
-class CodeWindow(FixedWindow):
-    def __init__(self, state, obj, *args, **kwargs):
-        self.obj = obj
+class CodeWindow(ResettableWindow, FixedWindow):
+    def __init__(self, state, *args, **kwargs):
         super().__init__(
             state,
-            tag=get_code_window_tag(obj),
+            tag="code_editor.gui.window",
             label="Code Editor",
-            pos=WINDOW_INFO["code_pos"],
-            width=WINDOW_INFO["code_size"][0],
-            height=WINDOW_INFO["code_size"][1],
             no_resize=True,
+            show=False,
+            no_scrollbar=True,
         )
 
     def create(self):
+        track = APP._active_track
+        clip = APP._active_clip
+        obj = None
+        if APP.code_view == GLOBAL_VIEW:
+            obj = APP.state
+        elif APP.code_view == TRACK_VIEW:
+            obj = track
+        else:
+            obj = clip
+
         with self.window:
+            dpg.configure_item(self.tag, label=f"Code > {getattr(obj, 'name', 'Global')}")
 
             def save():
                 APP.save_menu_callback()
-                APP._active_clip.code.reload()
-                APP._active_track.code.reload()
+                clip.code.reload()
+                track.code.reload()
                 self.state.code.reload()
-
-            def hide_code_windows():
-                for tag in APP.tags["hide_on_clip_selection"]:
-                    if "code_editor" in self.tag:
-                        dpg.configure_item(self.tag, show=False)
 
             def show_global(sender, app_data, user_data):
                 APP.code_view = GLOBAL_VIEW
-                hide_code_windows()
-                dpg.configure_item(get_code_window_tag(self.state), show=True)
+                self.reset()
 
             def show_track(sender, app_data, user_data):
                 APP.code_view = TRACK_VIEW
-                hide_code_windows()
-                if valid(APP._active_track):
-                    dpg.configure_item(
-                        get_code_window_tag(APP._active_track), show=True
-                    )
+                self.reset()
 
             def show_clip(sender, app_data, user_data):
                 APP.code_view = CLIP_VIEW
-                hide_code_windows()
-                if valid(APP._active_clip):
-                    dpg.configure_item(get_code_window_tag(APP._active_clip), show=True)
+                self.reset()
 
             with dpg.group(horizontal=True, height=20):
                 dpg.add_button(label="Save", callback=APP.save_menu_callback)
@@ -1840,14 +2043,15 @@ class CodeWindow(FixedWindow):
                     tag=self.tag + ".button.track", label="Track", callback=show_track
                 )
 
+            # TODO: Should create this in the value_registry
             dpg.add_input_text(
                 tag=f"{self.tag}.text",
-                default_value=self.obj.code.read(),
+                default_value=obj.code.read(),
                 multiline=True,
                 readonly=False,
                 tab_input=True,
-                width=SCREEN_WIDTH - 800 - 35,
-                height=SCREEN_HEIGHT - 520 - 70,
+                width=APP.window_manager.screen_width - 800 - 35,
+                height=APP.window_manager.screen_height - 520 - 70,
                 on_enter=False,
             )
 
@@ -1858,12 +2062,13 @@ class CodeWindow(FixedWindow):
             self.tag + ".button.separator", "code_editor.separator.theme"
         )
 
-        if isinstance(self.obj, model.Track):
+        if isinstance(obj, model.Track):
             dpg.bind_item_theme(self.tag + ".text", "code_editor.track.theme")
-        elif isinstance(self.obj, model.Clip):
+        elif isinstance(obj, model.Clip):
             dpg.bind_item_theme(self.tag + ".text", "code_editor.clip.theme")
         else:  # State
             dpg.bind_item_theme(self.tag + ".text", "code_editor.global.theme")
+
 
 # TODO: Not being used
 class AutomationWindow(FixedWindow):
@@ -2190,9 +2395,6 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
         super().__init__(
             state,
             tag="clip_parameters.gui.window",
-            width=WINDOW_INFO["clip_parameters_size"][0],
-            height=WINDOW_INFO["clip_parameters_size"][1],
-            pos=WINDOW_INFO["clip_parameters_pos"],
             show=True,
         )
 
@@ -2202,7 +2404,7 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
             if clip is None:
                 return
 
-            dpg.configure_item(self.tag, label=f"Clip Parameters | {clip.name}")
+            dpg.configure_item(self.tag, label=f"Inputs > {clip.name}")
 
             menu_tag = f"{self.tag}.menu_bar"
             with dpg.menu_bar(tag=menu_tag):
@@ -2227,7 +2429,6 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                             get_preset_menu_bar_tag,
                         ),
                     )
-                    # TODO: Fix this, preset themes should only be created if new
                     for preset in clip.presets:
                         APP.add_clip_preset_to_menu(clip, preset)
 
@@ -2242,9 +2443,9 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                 # causes an exception when selecting Presets in Clip Preset Window
                 try:
                     width = dpg.get_item_width(dpg.get_item_alias(app_data))
-                    percent = width / SCREEN_WIDTH
-                    NODE_WINDOW_PERCENT[0] = percent
-                    APP.resize_windows_callback(None, None, None)
+                    percent = width / APP.window_manager.screen_width
+                    APP.window_manager.CLIP_PARAM_WINDOW_PERCENT[0] = percent
+                    APP.window_manager.resize_all()
                 except Exception as e:
                     logger.exception(e)
 
@@ -2253,7 +2454,7 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
             dpg.bind_item_handler_registry(self.tag, handler)
 
             with dpg.group(horizontal=True):
-                width = 2*WINDOW_INFO["clip_parameters_size"][0]//3
+                width = 2*APP.window_manager.window_info["edit"]["clip_parameters_size"][0]//3
                 with dpg.child_window(
                     width=width,
                     no_scrollbar=True,
@@ -2297,34 +2498,12 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                                     continue
 
                                 with dpg.table_row() as row:
-                                    # When user clicks on the node, bring up the automation window.
-                                    def input_selected_callback(sender, app_data, user_data):
-                                        clip, ic = user_data
-                                        APP._active_input_channel = ic
-                                        for other_channel in clip.inputs:
-                                            if other_channel.deleted or ic == other_channel:
-                                                continue
-                                            dpg.configure_item(
-                                                get_source_node_window_tag(other_channel), show=False
-                                            )
-                                            if other_channel.input_type == "color":
-                                                dpg.bind_item_theme(f"{other_channel.id}.name_button", get_node_tag(other_channel) + ".theme")
-                                            else:
-                                                dpg.bind_item_theme(f"{other_channel.id}.name_button", "not_selected_preset.theme")
-
-                                        dpg.configure_item(
-                                            get_source_node_window_tag(ic),
-                                            show=True,
-                                        )
-                                        dpg.bind_item_theme(f"{ic.id}.name_button", "selected_preset.theme")
-                                        APP.reset_automation_plot(ic)
-
                                     if input_channel.input_type in ["int", "float", "bool", "midi", "osc_input_int", "osc_input_float"]:
                                         dpg.add_button(
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
-                                            callback=input_selected_callback,
-                                            user_data=(clip, input_channel)
+                                            callback=APP.action_callback,
+                                            user_data=SelectInputNode({"clip": clip, "channel": input_channel})
                                         )
 
                                         dpg.add_text(default_value=input_channel.input_type)
@@ -2351,8 +2530,8 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                                         dpg.add_button(
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
-                                            callback=input_selected_callback,
-                                            user_data=(clip, input_channel)
+                                            callback=APP.action_callback,
+                                            user_data=SelectInputNode({"clip": clip, "channel": input_channel})
                                         )
                                         dpg.bind_item_theme(f"{input_channel.id}.name_button", get_node_tag(input_channel) + ".theme")
 
@@ -2377,8 +2556,8 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                                         dpg.add_button(
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
-                                            callback=input_selected_callback,
-                                            user_data=(clip, input_channel)
+                                            callback=APP.action_callback,
+                                            user_data=SelectInputNode({"clip": clip, "channel": input_channel})
                                         )
                                         dpg.add_text(default_value="button")
 
@@ -2405,7 +2584,7 @@ class ClipParametersWindow(ResettableWindow, FixedWindow):
                                     def show_properties_window(sender, app_data, user_data):
                                         APP._properties_buffer.clear()
                                         dpg.configure_item(get_properties_window_tag(user_data), show=True)
-                                    dpg.add_button(label="Configure", callback=show_properties_window, user_data=input_channel)
+                                    dpg.add_button(label="Edit", callback=show_properties_window, user_data=input_channel)
 
                                     # Right click for input channel name button
                                     with dpg.popup(f"{input_channel.id}.name_button", mousebutton=1):

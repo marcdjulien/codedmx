@@ -1,16 +1,20 @@
 """
 TODO:
+    * Code editing
     * ? MIDI scaling (Test)
     * ? Delete unused code
     * X Finish Clip Parameteres Window (implement Edit button and input right click menu)
     * X Global code in transcedent project should scale inputs into a new variable that's used globally (Fixed by MIDI scaling)
-    * > Implement robust copy/paste/duplicate (clips, automation curves, input channels, )
+    * X Play each global track once on init
     * Performance Layout
-    * Compile into binary
+    * > Implement robust copy/paste/duplicate (clips, automation curves, input channels, )
+    * Better simulator
+    * Clean up private vars
+    * Compile into binary (pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --onefile nodedmx.py)
     * All logs to all appear in console
+    * self.app.state in GUI classes instead of self.state
 
     * Preview outputs
-    * Better simulator
     * Convert remaining windows to objects
     * Sequence editing, deleting, reordering
     * Preset editing
@@ -69,10 +73,6 @@ def get_output_configuration_window_tag(track):
     return f"{track.id}.gui.output_configuration_window"
 
 
-def get_io_matrix_window_tag(clip):
-    return f"{clip.id}.gui.io_matrix_window"
-
-
 def get_source_node_window_tag(input_channel, is_id=False):
     return f"{input_channel if is_id else input_channel.id}.gui.source_node_window"
 
@@ -97,14 +97,6 @@ def get_code_window_tag(obj):
     return f"{obj.id}.gui.code_editor.code_window"
 
 
-def get_node_attribute_tag(clip, channel):
-    return f"{clip.id}.{channel.id}.node_attribute"
-
-
-def get_output_node_value_tag(clip, output_channel):
-    return f"{clip.id}.{output_channel.id}.output.value"
-
-
 def get_preset_menu_bar_tag(preset):
     return f"{preset.id}.menu_bar"
 
@@ -127,10 +119,6 @@ def get_preset_button_tag(preset):
 
 def get_channel_preset_theme(preset):
     return f"{preset.id}.theme"
-
-
-def get_automation_button_tag(automation):
-    return f"{automation.id}.button"
 
 
 class Application:
@@ -217,6 +205,9 @@ class Application:
         self.lock = RLock()
         self.past_actions = []
 
+        self._play_button_color = [0, 255, 0, 60]
+
+        # Windows
         self.performance_preset_window = None
         self.global_performance_preset_window = None
         self.save_new_global_performance_preset_window = None
@@ -228,6 +219,9 @@ class Application:
         self.track_properties_windows = {}
         self.console_window = None
         self.remap_midi_device_window = None
+        self.code_window = None
+
+        self.window_manager = gui.WindowManager(self)
 
     def run(self):
         """Initialize then run the main loop."""
@@ -259,9 +253,8 @@ class Application:
                 }[output_channel.dtype]
                 add_func(tag=tag)
 
-        logging.debug("Initializing window size")
-        self.update_window_size_info(gui.SCREEN_WIDTH, gui.SCREEN_HEIGHT)
-        dpg.set_viewport_resize_callback(callback=self.resize_windows_callback)
+        logging.debug("Initializing window settings")
+        dpg.set_viewport_resize_callback(callback=self.window_manager.resize_windows_callback)
 
         # Create main viewport.
         logging.debug("Create viewport")
@@ -302,11 +295,7 @@ class Application:
 
         #### Create Code Editor Windows ####
         logging.debug("Creating code editor windows")
-        # Create the global code editor and individual Track code editor windows.
-        # Clip editor windows will be created when Clips are created.
-        self.create_code_editor_window(self.state)
-        for track in self.state.tracks:
-            self.create_code_editor_window(track)
+        self.code_window = gui.CodeWindow(self.state)
 
         #### Create Clip Parameters Window ####
         logging.debug("Creating clip parameters window")
@@ -435,42 +424,6 @@ class Application:
             action.execute()
         self.past_actions.append(action)
 
-    def update_window_size_info(self, new_width, new_height):
-        gui.SCREEN_WIDTH = new_width
-        gui.SCREEN_HEIGHT = new_height
-
-        clip_window_pos = (0, 18)
-        clip_window_size = (
-            int(gui.CLIP_WINDOW_PERCENT[0] * new_width),
-            int(gui.CLIP_WINDOW_PERCENT[1] * new_height),
-        )
-
-        code_window_pos = (clip_window_size[0], 18)
-        code_window_size = (new_width - clip_window_size[0], clip_window_size[1])
-
-        node_window_pos = (0, 18 + clip_window_size[1])
-        node_window_size = (
-            int(gui.NODE_WINDOW_PERCENT[0] * new_width),
-            new_height - clip_window_size[1],
-        )
-
-        console_window_pos = (node_window_size[0], 18 + code_window_size[1])
-        console_window_size = (
-            new_width - node_window_size[0],
-            new_height - code_window_size[1],
-        )
-
-        gui.WINDOW_INFO = {
-            "clip_pos": clip_window_pos,
-            "clip_size": clip_window_size,
-            "code_pos": code_window_pos,
-            "code_size": code_window_size,
-            "console_pos": console_window_pos,
-            "console_size": console_window_size,
-            "clip_parameters_pos": node_window_pos,
-            "clip_parameters_size": node_window_size,
-        }
-
     def update_clip_window(self):
         for track_i, track in enumerate(self.state.tracks):
             for clip_i, clip in enumerate(track.clips):
@@ -512,8 +465,7 @@ class Application:
                 )
 
     def add_clip_preset_to_menu(self, clip, preset, before=None):
-        window_tag = get_node_window_tag(clip)
-        menu_tag = f"{window_tag}.menu_bar"
+        menu_tag = f"{self.clip_params_window.tag}.menu_bar"
         preset_menu_tag = f"{menu_tag}.preset_menu"
         preset_menu_bar = get_preset_menu_bar_tag(preset)
         preset_theme = get_channel_preset_theme(preset)
@@ -535,14 +487,11 @@ class Application:
             result = self.execute_wrapper(
                 f"duplicate_clip_preset {clip.id} {preset.id}"
             )
-            if result.success:
-                self.add_clip_preset_to_menu(clip, result.payload, before=preset)
 
         with dpg.menu(
             parent=preset_menu_tag,
             tag=preset_menu_bar,
             label=preset.name,
-            drop_callback=self.print_callback,
             before=get_preset_menu_bar_tag(before) if util.valid(before) else 0,
         ):
             dpg.add_menu_item(
@@ -595,9 +544,6 @@ class Application:
         with dpg.window(
             tag=parent,
             label="Automation Window",
-            width=gui.WINDOW_INFO["code_size"][0],
-            height=gui.WINDOW_INFO["code_size"][1],
-            pos=gui.WINDOW_INFO["code_pos"],
             show=False,
             no_move=True,
             no_title_bar=True,
@@ -900,10 +846,6 @@ class Application:
                 # Right click
                 if app_data[0] == 1:
                     dpg.configure_item(item=popup_tag, show=True)
-
-    def create_code_editor_window(self, obj):
-        code_window = gui.CodeWindow(self.state, obj)
-        self.tags["hide_on_clip_selection"].append(code_window.tag)
 
     def create_input_channel_window(self, input_channel):
         parent = get_source_node_window_tag(input_channel)
@@ -1398,7 +1340,10 @@ class Application:
         with dpg.theme(tag="transport.play_button.play.theme"):
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(
-                    dpg.mvThemeCol_Button, (0, 255, 0, 60), category=dpg.mvThemeCat_Core
+                    dpg.mvThemeCol_Button,
+                    self._play_button_color,
+                    category=dpg.mvThemeCat_Core,
+                    tag="transport.play_button.play.theme.color",
                 )
 
         with dpg.theme(tag="code_editor.global.theme"):
@@ -1638,8 +1583,19 @@ class Application:
 
     def update_gui_from_state(self):
         dpg.configure_item(
-            "play_button", label="[Playing]" if self.state.playing else "[Paused]"
+            "play_button",
+            label="[Playing]" if self.state.playing else "[Paused]",
         )
+        if self.state.playing:
+            g = 0.90 * self._play_button_color[1]
+            g = max(10, int(g))
+
+            if int(util.beats_to_16th(self.state.time_since_start_beat)) % 4 == 0:
+                g = 255
+            self._play_button_color[1] = g
+            dpg.configure_item("transport.play_button.play.theme.color", value=self._play_button_color)
+
+
 
         # Cache the active clip, since it can change while this function is running
         c_active_clip = self._active_clip
@@ -1808,7 +1764,6 @@ class Application:
         # Otherwise, we're creating a new one.
         editing = util.valid(preset)
 
-        window_tag = get_node_window_tag(clip)
         preset_window_tag = "preset_window"
         try:
             dpg.delete_item(preset_window_tag)
@@ -1850,7 +1805,6 @@ class Application:
                     else:
                         new_preset = result.payload
                         self.create_preset_theme(new_preset)
-                        self.add_clip_preset_to_menu(clip, new_preset)
 
                     self._clip_preset_buffer.clear()
                     dpg.delete_item("preset_window")
@@ -2554,6 +2508,7 @@ class Application:
                     if self.state.mode == "edit"
                     else "Mode: Performance",
                 )
+                self.window_manager.resize_all()
 
             dpg.add_button(
                 label="Mode: Edit",
@@ -2589,7 +2544,7 @@ class Application:
                 {"clip": self._active_clip, "channel": input_channel}
             ).execute()
 
-        self.resize_windows_callback(None, None, None)
+        self.window_manager.resize_all()
 
     def shift_points_callback(self, sender, app_data, user_data):
         if util.valid(self._active_input_channel.active_automation):
@@ -2857,6 +2812,8 @@ class Application:
 
             dpg.bind_item_theme(preset_button_tag, "selected_preset.theme")
 
+            self.clip_automation_presets_window.reset()
+
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
         if self.ctrl:
@@ -2942,58 +2899,6 @@ class Application:
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Save", callback=save, user_data=obj)
                 dpg.add_button(label="Cancel", callback=cancel, user_data=obj)
-
-    def resize_windows_callback(self, sender, app_data, user_data):
-        if app_data is None:
-            new_width = gui.SCREEN_WIDTH
-            new_height = gui.SCREEN_HEIGHT
-        else:
-            new_width, new_height = app_data[2:4]
-        self.update_window_size_info(new_width, new_height)
-
-        # Clip window
-        dpg.set_item_pos("clip.gui.window", gui.WINDOW_INFO["clip_pos"])
-        dpg.set_item_width("clip.gui.window", gui.WINDOW_INFO["clip_size"][0])
-        dpg.set_item_height("clip.gui.window", gui.WINDOW_INFO["clip_size"][1])
-
-        # Code windows
-        def resize_code_window(obj):
-            window_tag = get_code_window_tag(obj)
-            if not dpg.does_item_exist(window_tag):
-                return
-            dpg.set_item_pos(window_tag, gui.WINDOW_INFO["code_pos"])
-            dpg.set_item_width(window_tag, gui.WINDOW_INFO["code_size"][0])
-            dpg.set_item_height(window_tag, gui.WINDOW_INFO["code_size"][1])
-            dpg.set_item_width(
-                window_tag + ".text", gui.WINDOW_INFO["code_size"][0] * 0.98
-            )
-            dpg.set_item_height(
-                window_tag + ".text", gui.WINDOW_INFO["code_size"][1] * 0.91
-            )
-
-        resize_code_window(self.state)
-        for track in self.state.tracks:
-            resize_code_window(track)
-            for clip in track.clips:
-                if util.valid(clip):
-                    resize_code_window(clip)
-
-        # Resize automation window
-        for input_channel in self.get_all_valid_clip_input_channels():
-            tag = get_source_node_window_tag(input_channel)
-            dpg.set_item_pos(tag, gui.WINDOW_INFO["code_pos"])
-            dpg.set_item_width(tag, gui.WINDOW_INFO["code_size"][0])
-            dpg.set_item_height(tag, gui.WINDOW_INFO["code_size"][1])
-
-        # Console winodws
-        dpg.set_item_pos("console.gui.window", gui.WINDOW_INFO["console_pos"])
-        dpg.set_item_width("console.gui.window", gui.WINDOW_INFO["console_size"][0])
-        dpg.set_item_height("console.gui.window", gui.WINDOW_INFO["console_size"][1])
-
-        # Node Windows
-        dpg.set_item_pos("clip_parameters.gui.window", gui.WINDOW_INFO["clip_parameters_pos"])
-        dpg.set_item_width("clip_parameters.gui.window", gui.WINDOW_INFO["clip_parameters_size"][0])
-        dpg.set_item_height("clip_parameters.gui.window", gui.WINDOW_INFO["clip_parameters_size"][1])
 
     def open_menu_callback(self):
         dpg.configure_item("open_file_dialog", show=True)
@@ -3337,9 +3242,6 @@ class Application:
                 dpg.configure_item(
                     f"io.{inout}.table.{i}.type", label=io_type_class.nice_title
                 )
-
-        #for theme_tag, color in self.gui_state["clip_preset_themes"].items():
-        #    dpg.configure_item(theme_tag, value=color)
 
     def save_last_active_clip(self):
         if util.valid(self._active_track) and util.valid(self._active_clip):
