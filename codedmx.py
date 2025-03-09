@@ -263,7 +263,10 @@ class Application:
 
             # Code text
             def create_text(obj):
-                dpg.add_string_value(tag=get_code_window_tag(obj) + ".text", default_value=obj.code.read())
+                dpg.add_string_value(
+                    tag=get_code_window_tag(obj) + ".text",
+                    default_value=obj.code.read(),
+                )
 
             create_text(self.state)
             for track in self.state.tracks:
@@ -280,6 +283,8 @@ class Application:
             height=gui.SCREEN_HEIGHT,
             x_pos=50,
             y_pos=0,
+            large_icon=gui.ICON,
+            small_icon=gui.ICON,
         )
 
         #### Init Themes ####
@@ -292,12 +297,10 @@ class Application:
 
         logging.debug("Creating performance windows")
         self.clip_preset_window = gui.ClipPresetWindow(self.state)
-        self.save_new_multi_clip_preset_window = (
-            gui.SaveNewMultiClipPresetWindow(self.state)
-        )
-        self.multi_clip_preset_window = gui.MultiClipPresetWindow(
+        self.save_new_multi_clip_preset_window = gui.SaveNewMultiClipPresetWindow(
             self.state
         )
+        self.multi_clip_preset_window = gui.MultiClipPresetWindow(self.state)
         self.clip_automation_presets_window = gui.ClipAutomationPresetWindow(self.state)
         self.add_new_trigger_window = gui.AddNewTriggerWindow(self.state)
         self.manage_trigger_window = gui.ManageTriggerWindow(self.state)
@@ -373,14 +376,16 @@ class Application:
                     )
 
         logging.debug("Initializing window settings")
-        dpg.set_viewport_resize_callback(callback=self.window_manager.resize_windows_callback)
+        dpg.set_viewport_resize_callback(
+            callback=self.window_manager.resize_windows_callback
+        )
 
         self.restore_gui_state()
 
         dpg.setup_dearpygui()
         dpg.show_viewport()
-        #dpg.show_item_registry()
-        #dpg.show_metrics()
+        # dpg.show_item_registry()
+        # dpg.show_metrics()
 
     def main_loop(self):
         logging.debug("Starting main loop")
@@ -402,6 +407,7 @@ class Application:
             dpg.destroy_context()
         except Exception as e:
             import traceback
+
             logger.warning(traceback.format_exc())
             logger.warning(e)
             raise e
@@ -503,7 +509,9 @@ class Application:
                         if active_preset == preset:
                             dpg.bind_item_theme(button_tag, "selected_preset2.theme")
                         else:
-                            dpg.bind_item_theme(button_tag, get_channel_preset_theme(preset))
+                            dpg.bind_item_theme(
+                                button_tag, get_channel_preset_theme(preset)
+                            )
 
     def add_clip_preset_to_menu(self, clip, preset, before=None):
         menu_tag = f"{self.clip_params_window.tag}.menu_bar"
@@ -1332,12 +1340,12 @@ class Application:
 
     def create_themes(self):
         # Initialize global theme
-        #with dpg.theme() as global_theme:
+        # with dpg.theme() as global_theme:
 
-            #with dpg.theme_component(dpg.mvAll):
-                #dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (40, 40, 40), category=dpg.mvThemeCat_Core)
-                #dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 40), category=dpg.mvThemeCat_Core)
-                #dpg.add_theme_color(dpg.mvThemeCol_Border, (20, 20, 20), category=dpg.mvThemeCat_Core)
+        # with dpg.theme_component(dpg.mvAll):
+        # dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (40, 40, 40), category=dpg.mvThemeCat_Core)
+        # dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 40), category=dpg.mvThemeCat_Core)
+        # dpg.add_theme_color(dpg.mvThemeCol_Border, (20, 20, 20), category=dpg.mvThemeCat_Core)
         #
         #        # Buttons
         #        dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 15, 40), category=dpg.mvThemeCat_Core)
@@ -1351,7 +1359,7 @@ class Application:
         #        # Text
         #        dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 255, 255), category=dpg.mvThemeCat_Core)
         #
-        #dpg.bind_theme(global_theme)
+        # dpg.bind_theme(global_theme)
 
         with dpg.theme(tag="clip_text_theme") as button_theme:
             with dpg.theme_component(dpg.mvAll):
@@ -1632,7 +1640,9 @@ class Application:
             for clip in track.clips:
                 if clip is None:
                     continue
-                for output_channel in self.get_all_valid_track_output_channels_for_clip(clip):
+                for output_channel in self.get_all_valid_track_output_channels_for_clip(
+                    clip
+                ):
                     if output_channel.deleted or output_channel.id in found:
                         continue
                     dst_channels.append(output_channel)
@@ -1683,7 +1693,9 @@ class Application:
             if int(util.beats_to_16th(self.state.time_since_start_beat)) % 4 == 0:
                 g = 255
             self._play_button_color[1] = g
-            dpg.configure_item("transport.play_button.play.theme.color", value=self._play_button_color)
+            dpg.configure_item(
+                "transport.play_button.play.theme.color", value=self._play_button_color
+            )
 
         # Cache the active clip, since it can change while this function is running
         c_active_clip = self._active_clip
@@ -1707,7 +1719,13 @@ class Application:
                     dpg.configure_item(f"{node_theme}.color2", value=rgb)
                     dpg.configure_item(f"{node_theme}.color3", value=rgb)
                     dpg.configure_item(f"{node_theme}.row_bg", value=rgb)
-                elif src_channel.input_type in ["int", "float", "midi", "osc_input_int", "osc_input_float"]:
+                elif src_channel.input_type in [
+                    "int",
+                    "float",
+                    "midi",
+                    "osc_input_int",
+                    "osc_input_float",
+                ]:
                     tag = f"{src_channel.id}.mini_plot"
                     if dpg.does_item_exist(tag):
                         dpg.set_value(tag, src_channel.history)
@@ -2025,14 +2043,18 @@ class Application:
         button_bg_color_theme_tag = f"{preset_theme}.button_bg_color"
         with dpg.theme(tag=preset_theme):
             with dpg.theme_component(dpg.mvAll):
-                value = self.gui_state["clip_preset_themes"].get(text_color_theme_tag, [255, 255, 255, 255])
+                value = self.gui_state["clip_preset_themes"].get(
+                    text_color_theme_tag, [255, 255, 255, 255]
+                )
                 dpg.add_theme_color(
                     tag=text_color_theme_tag,
                     target=dpg.mvThemeCol_Text,
                     value=value,
                     category=dpg.mvThemeCat_Core,
                 )
-                value = self.gui_state["clip_preset_themes"].get(button_bg_color_theme_tag, [255, 255, 255, 255])
+                value = self.gui_state["clip_preset_themes"].get(
+                    button_bg_color_theme_tag, [255, 255, 255, 255]
+                )
                 dpg.add_theme_color(
                     tag=button_bg_color_theme_tag,
                     target=dpg.mvThemeCol_Border,
@@ -2100,7 +2122,9 @@ class Application:
             add_func(tag=tag)
 
             # Add attributes
-            dpg.add_string_value(tag=f"{input_channel.id}.name", default_value=input_channel.name)
+            dpg.add_string_value(
+                tag=f"{input_channel.id}.name", default_value=input_channel.name
+            )
 
             # Add parameters
             parameters = getattr(input_channel, "parameters", [])
@@ -2169,6 +2193,7 @@ class Application:
                 label="Copy",
                 callback=self.copy_selected,
             )
+
             def paste():
                 self.paste_selected()
                 dpg.configure_item(parent, show=False)
@@ -2249,20 +2274,27 @@ class Application:
 
                                     def unmap_midi(sender, app_data, user_data):
                                         obj = user_data
-                                        result = self.execute_wrapper(f"unmap_midi {obj.id}")
+                                        result = self.execute_wrapper(
+                                            f"unmap_midi {obj.id}"
+                                        )
                                         if result.success:
-                                            device_parameter_id = obj.get_parameter_id("device")
+                                            device_parameter_id = obj.get_parameter_id(
+                                                "device"
+                                            )
                                             id_parameter_id = obj.get_parameter_id("id")
                                             dpg.set_value(
                                                 f"{device_parameter_id}.value",
                                                 obj.get_parameter("device").value,
                                             )
                                             dpg.set_value(
-                                                f"{id_parameter_id}.value", obj.get_parameter("id").value
+                                                f"{id_parameter_id}.value",
+                                                obj.get_parameter("id").value,
                                             )
 
                                     dpg.add_button(
-                                        label="Clear", callback=unmap_midi, user_data=obj
+                                        label="Clear",
+                                        callback=unmap_midi,
+                                        user_data=obj,
                                     )
 
                 with dpg.table_row():
@@ -2665,8 +2697,8 @@ class Application:
                 {"clip": self._active_clip, "channel": input_channel}
             ).execute()
 
-        #self.window_manager.resize_all()
-        #self.window_manager.reset_all()
+        # self.window_manager.resize_all()
+        # self.window_manager.reset_all()
 
     def shift_points_callback(self, sender, app_data, user_data):
         if util.valid(self._active_input_channel.active_automation):
@@ -3001,7 +3033,12 @@ class Application:
         dpg.set_value("last_midi_message", "")
 
         with dpg.window(
-            tag="midi_map_window", modal=True, width=300, height=300, no_move=True, no_title_bar=True,
+            tag="midi_map_window",
+            modal=True,
+            width=300,
+            height=300,
+            no_move=True,
+            no_title_bar=True,
         ):
             dpg.add_text("Incoming MIDI: ")
             dpg.add_text(source="last_midi_message")
@@ -3378,8 +3415,11 @@ class Application:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="CodeDMX [BETA]")
     parser.add_argument(
-        #"--project", default="C:\\Users\\marcd\\Desktop\\Code\\nodedmx\\projects\\transcedent5-v3\\transcedent5-v3.ndmx", dest="project_file_path", help="Project file path."
-        "--project", default=None, dest="project_file_path", help="Project file path."
+        # "--project", default="C:\\Users\\marcd\\Desktop\\Code\\nodedmx\\projects\\transcedent5-v3\\transcedent5-v3.ndmx", dest="project_file_path", help="Project file path."
+        "--project",
+        default=None,
+        dest="project_file_path",
+        help="Project file path.",
     )
 
     parser.add_argument(

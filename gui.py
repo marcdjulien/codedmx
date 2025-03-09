@@ -1,5 +1,5 @@
 from inspect import getmembers, isfunction
-
+import os
 import dearpygui.dearpygui as dpg
 import textwrap
 import logging
@@ -34,6 +34,8 @@ GLOBAL_VIEW = 2
 
 DEFAULT_SEQUENCE_DURATION = 4  # beats
 VARIABLE_NAME_PATTERN = r"[a-zA-Z_][a-zA-Z\d_]*$"
+
+ICON = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
 
 
 def set_app(app):
@@ -135,13 +137,16 @@ class WindowManager:
             new_height - right_pane_bottom - height_margin,
         )
 
-        global_clip_preset_pos = (clip_preset_pos[0]+clip_preset_size[0], 18)
+        global_clip_preset_pos = (clip_preset_pos[0] + clip_preset_size[0], 18)
         global_clip_preset_size = (
             right_pane_width - clip_preset_size[0],
             new_height - right_pane_bottom - height_margin,
         )
 
-        clip_automation_pos = (clip_window_size[0], clip_preset_pos[1] + clip_preset_size[1])
+        clip_automation_pos = (
+            clip_window_size[0],
+            clip_preset_pos[1] + clip_preset_size[1],
+        )
         clip_automation_size = (
             right_pane_width,
             right_pane_bottom,
@@ -182,9 +187,7 @@ class WindowManager:
             dpg.set_item_pos(window_tag, window_info["code_pos"])
             dpg.set_item_width(window_tag, window_info["code_size"][0])
             dpg.set_item_height(window_tag, window_info["code_size"][1])
-            dpg.set_item_width(
-                window_tag + ".text", window_info["code_size"][0] * 0.98
-            )
+            dpg.set_item_width(window_tag + ".text", window_info["code_size"][0] * 0.98)
             dpg.set_item_height(
                 window_tag + ".text", window_info["code_size"][1] * 0.91
             )
@@ -204,9 +207,15 @@ class WindowManager:
             dpg.configure_item("console.gui.window", show=True)
 
             # Clip Parameters Windows
-            dpg.set_item_pos("clip_parameters.gui.window", window_info["clip_parameters_pos"])
-            dpg.set_item_width("clip_parameters.gui.window", window_info["clip_parameters_size"][0])
-            dpg.set_item_height("clip_parameters.gui.window", window_info["clip_parameters_size"][1])
+            dpg.set_item_pos(
+                "clip_parameters.gui.window", window_info["clip_parameters_pos"]
+            )
+            dpg.set_item_width(
+                "clip_parameters.gui.window", window_info["clip_parameters_size"][0]
+            )
+            dpg.set_item_height(
+                "clip_parameters.gui.window", window_info["clip_parameters_size"][1]
+            )
             dpg.configure_item("clip_parameters.gui.window", show=True)
 
         elif self.state.mode == "performance":
@@ -228,26 +237,50 @@ class WindowManager:
 
             # Clip Preset Window
             dpg.set_item_pos("clip_preset.gui.window", window_info["clip_preset_pos"])
-            dpg.set_item_width("clip_preset.gui.window", window_info["clip_preset_size"][0])
-            dpg.set_item_height("clip_preset.gui.window", window_info["clip_preset_size"][1])
+            dpg.set_item_width(
+                "clip_preset.gui.window", window_info["clip_preset_size"][0]
+            )
+            dpg.set_item_height(
+                "clip_preset.gui.window", window_info["clip_preset_size"][1]
+            )
             dpg.configure_item("clip_preset.gui.window", show=True)
 
             # Global Clip Preset Window
-            dpg.set_item_pos("global_preset_window.gui.window", window_info["global_clip_preset_pos"])
-            dpg.set_item_width("global_preset_window.gui.window", window_info["global_clip_preset_size"][0])
-            dpg.set_item_height("global_preset_window.gui.window", window_info["global_clip_preset_size"][1])
+            dpg.set_item_pos(
+                "global_preset_window.gui.window", window_info["global_clip_preset_pos"]
+            )
+            dpg.set_item_width(
+                "global_preset_window.gui.window",
+                window_info["global_clip_preset_size"][0],
+            )
+            dpg.set_item_height(
+                "global_preset_window.gui.window",
+                window_info["global_clip_preset_size"][1],
+            )
             dpg.configure_item("global_preset_window.gui.window", show=True)
 
             # Clip Parameters Windows
-            dpg.set_item_pos("clip_parameters.gui.window", window_info["clip_parameters_pos"])
-            dpg.set_item_width("clip_parameters.gui.window", window_info["clip_parameters_size"][0])
-            dpg.set_item_height("clip_parameters.gui.window", window_info["clip_parameters_size"][1])
+            dpg.set_item_pos(
+                "clip_parameters.gui.window", window_info["clip_parameters_pos"]
+            )
+            dpg.set_item_width(
+                "clip_parameters.gui.window", window_info["clip_parameters_size"][0]
+            )
+            dpg.set_item_height(
+                "clip_parameters.gui.window", window_info["clip_parameters_size"][1]
+            )
             dpg.configure_item("clip_parameters.gui.window", show=True)
 
             # Clip Automation Windows
-            dpg.set_item_pos("clip_automation.gui.window", window_info["clip_automation_pos"])
-            dpg.set_item_width("clip_automation.gui.window", window_info["clip_automation_size"][0])
-            dpg.set_item_height("clip_automation.gui.window", window_info["clip_automation_size"][1])
+            dpg.set_item_pos(
+                "clip_automation.gui.window", window_info["clip_automation_pos"]
+            )
+            dpg.set_item_width(
+                "clip_automation.gui.window", window_info["clip_automation_size"][0]
+            )
+            dpg.set_item_height(
+                "clip_automation.gui.window", window_info["clip_automation_size"][1]
+            )
             dpg.configure_item("clip_automation.gui.window", show=True)
 
 
@@ -357,9 +390,14 @@ class SelectInputNode(GuiAction):
             )
             # Set button color
             if other_input_channel.input_type == "color":
-                dpg.bind_item_theme(f"{other_input_channel.id}.name_button", get_node_tag(other_input_channel) + ".theme")
+                dpg.bind_item_theme(
+                    f"{other_input_channel.id}.name_button",
+                    get_node_tag(other_input_channel) + ".theme",
+                )
             else:
-                dpg.bind_item_theme(f"{other_input_channel.id}.name_button", "not_selected_preset.theme")
+                dpg.bind_item_theme(
+                    f"{other_input_channel.id}.name_button", "not_selected_preset.theme"
+                )
 
         if self.app.state.mode == "edit":
             dpg.configure_item(get_source_node_window_tag(input_channel), show=True)
@@ -389,7 +427,9 @@ class CreateNewClip(GuiAction):
         clip = track.clips[clip_i]
 
         with dpg.value_registry():
-            dpg.add_string_value(tag=get_code_window_tag(clip) + ".text", default_value=clip.code.read())
+            dpg.add_string_value(
+                tag=get_code_window_tag(clip) + ".text", default_value=clip.code.read()
+            )
 
         # TODO: Can probably simplify this by making Clipindow resettable
         # Gui Updates
@@ -1377,7 +1417,11 @@ class ClipPresetWindow(ResettableWindow):
 
         with dpg.theme(tag="clip_preset.gui.window.table_header_theme"):
             with dpg.theme_component(dpg.mvAll):
-                for target in [dpg.mvThemeCol_ButtonHovered, dpg.mvThemeCol_Button, dpg.mvThemeCol_ButtonActive]:
+                for target in [
+                    dpg.mvThemeCol_ButtonHovered,
+                    dpg.mvThemeCol_Button,
+                    dpg.mvThemeCol_ButtonActive,
+                ]:
                     dpg.add_theme_color(
                         target=target,
                         value=[22, 42, 62, 105],
@@ -1404,7 +1448,13 @@ class ClipPresetWindow(ResettableWindow):
             SelectClip({"track": track, "clip": clip}).execute()
 
         with self.window:
-            with dpg.table(tag=f"{self.tag}.table", policy=dpg.mvTable_SizingFixedSame, scrollX=True, scrollY=False, hideable=True):
+            with dpg.table(
+                tag=f"{self.tag}.table",
+                policy=dpg.mvTable_SizingFixedSame,
+                scrollX=True,
+                scrollY=False,
+                hideable=True,
+            ):
                 has_presets = {}
                 for i, track in enumerate(self.state.tracks):
                     any_presets = False
@@ -1433,9 +1483,11 @@ class ClipPresetWindow(ResettableWindow):
                                 with dpg.group(
                                     tag=f"{clip.id}.clip_preset_window.group",
                                 ):
-
                                     dpg.add_button(label=clip.name, width=150)
-                                    dpg.bind_item_theme(dpg.last_item(), "clip_preset.gui.window.table_header_theme")
+                                    dpg.bind_item_theme(
+                                        dpg.last_item(),
+                                        "clip_preset.gui.window.table_header_theme",
+                                    )
 
                                     for preset in clip.presets:
                                         dpg.add_button(
@@ -1443,7 +1495,7 @@ class ClipPresetWindow(ResettableWindow):
                                             label=preset.name,
                                             callback=play_clip_and_preset,
                                             user_data=(track, clip, preset),
-                                            width=-1
+                                            width=-1,
                                         )
                                         dpg.bind_item_theme(
                                             dpg.last_item(),
@@ -1470,7 +1522,6 @@ class MultiClipPresetWindow(ResettableWindow):
             self.fix_location()
 
     def create(self):
-
         def play_multi_clip_preset_preset(sender, app_data, user_data):
             multi_clip_preset = user_data
             multi_clip_preset.execute()
@@ -1561,7 +1612,11 @@ class SaveNewMultiClipPresetWindow(ResettableWindow):
 
                         def preset_selected(sender, app_data, user_data):
                             i, title, track, clip, preset = user_data
-                            self._multi_clip_presets_buffer[int(i)] = (track, clip, preset)
+                            self._multi_clip_presets_buffer[int(i)] = (
+                                track,
+                                clip,
+                                preset,
+                            )
                             dpg.configure_item(
                                 item=f"{self.tag}.menu_bar.{i}.title",
                                 label=title,
@@ -1852,9 +1907,12 @@ class ClipAutomationPresetWindow(ResettableWindow):
             if APP._active_track.id in APP._active_presets:
                 del APP._active_presets[APP._active_track.id]
 
-
         with self.window:
-            with dpg.table(tag="all_automation.table", policy=dpg.mvTable_SizingFixedFit, scrollX=True):
+            with dpg.table(
+                tag="all_automation.table",
+                policy=dpg.mvTable_SizingFixedFit,
+                scrollX=True,
+            ):
                 for channel in self.clip.inputs:
                     if not valid(channel):
                         continue
@@ -1922,7 +1980,6 @@ class ClipWindow(Window):
         self.fix_location()
 
     def create(self):
-
         with self.window:
             table_tag = f"clip_window.table"
             with dpg.table(
@@ -2053,7 +2110,6 @@ class ConsoleWindow(Window):
         self.fix_location()
 
     def create(self):
-
         with self.window:
             with dpg.group(horizontal=True):
 
@@ -2100,7 +2156,6 @@ class CodeWindow(ResettableWindow):
         self.fix_location()
 
     def create(self):
-
         track = APP._active_track
         clip = APP._active_clip
         obj = None
@@ -2112,7 +2167,9 @@ class CodeWindow(ResettableWindow):
             obj = clip
 
         with self.window:
-            dpg.configure_item(self.tag, label=f"Code > {getattr(obj, 'name', 'Global')}")
+            dpg.configure_item(
+                self.tag, label=f"Code > {getattr(obj, 'name', 'Global')}"
+            )
 
             def save():
                 APP.save_menu_callback()
@@ -2198,7 +2255,6 @@ class AutomationWindow(Window):
 
     # TODO: Finish conversion
     def create(self):
-
         with self.window:
             self.tags["hide_on_clip_selection"].append(parent)
 
@@ -2508,7 +2564,7 @@ class ClipParametersWindow(ResettableWindow):
             state,
             tag="clip_parameters.gui.window",
             show=True,
-            label="Select a Controller ^"
+            label="Select a Controller ^",
         )
 
     def configure_window(self):
@@ -2517,7 +2573,6 @@ class ClipParametersWindow(ResettableWindow):
     def create(self):
         clip = APP._active_clip
         with self.window:
-
             if clip is None:
                 return
 
@@ -2525,7 +2580,6 @@ class ClipParametersWindow(ResettableWindow):
 
             menu_tag = f"{self.tag}.menu_bar"
             with dpg.menu_bar(tag=menu_tag):
-
                 # TODO: The node menu should just add to the current active clip
                 # so that we don't need a new menu for each clip
                 APP.create_input_channel_menu(menu_tag, clip)
@@ -2572,12 +2626,18 @@ class ClipParametersWindow(ResettableWindow):
             dpg.bind_item_handler_registry(self.tag, handler)
 
             with dpg.group(horizontal=True):
-                width = 2*APP.window_manager.window_info["edit"]["clip_parameters_size"][0]//3
+                width = (
+                    2
+                    * APP.window_manager.window_info["edit"]["clip_parameters_size"][0]
+                    // 3
+                )
                 with dpg.child_window(
                     width=width,
                     no_scrollbar=True,
                 ):
-                    with dpg.group(tag="input_child_window_group", width=width, height=1000):
+                    with dpg.group(
+                        tag="input_child_window_group", width=width, height=1000
+                    ):
                         with dpg.table(
                             header_row=True,
                             tag="clip_parameters.input.table.gui",
@@ -2605,30 +2665,49 @@ class ClipParametersWindow(ResettableWindow):
                                 label="Parameters",
                                 tag=f"clip_parameters.input.table.column.parameters",
                                 width_stretch=True,
-                                init_width_or_weight=0.4,                        )
+                                init_width_or_weight=0.4,
+                            )
                             dpg.add_table_column(
                                 tag=f"clip_parameters.input.table.column.edit",
                                 width_stretch=True,
-                                init_width_or_weight=0.1,                        )
+                                init_width_or_weight=0.1,
+                            )
 
                             for input_index, input_channel in enumerate(clip.inputs):
                                 if input_channel.deleted:
                                     continue
 
                                 with dpg.table_row() as row:
-                                    if input_channel.input_type in ["int", "float", "bool", "midi", "osc_input_int", "osc_input_float"]:
+                                    if input_channel.input_type in [
+                                        "int",
+                                        "float",
+                                        "bool",
+                                        "midi",
+                                        "osc_input_int",
+                                        "osc_input_float",
+                                    ]:
                                         dpg.add_button(
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
                                             callback=APP.action_callback,
-                                            user_data=SelectInputNode({"clip": clip, "channel": input_channel})
+                                            user_data=SelectInputNode(
+                                                {"clip": clip, "channel": input_channel}
+                                            ),
                                         )
 
-                                        dpg.add_text(default_value=input_channel.input_type)
+                                        dpg.add_text(
+                                            default_value=input_channel.input_type
+                                        )
 
-                                        with dpg.group(horizontal=True, horizontal_spacing=5):
+                                        with dpg.group(
+                                            horizontal=True, horizontal_spacing=5
+                                        ):
                                             if input_channel.mode == "automation":
-                                                dpg.add_simple_plot(height=20, width=50, tag=f"{input_channel.id}.mini_plot")
+                                                dpg.add_simple_plot(
+                                                    height=20,
+                                                    width=50,
+                                                    tag=f"{input_channel.id}.mini_plot",
+                                                )
                                                 add_func = (
                                                     dpg.add_input_float
                                                     if input_channel.dtype == "float"
@@ -2647,8 +2726,12 @@ class ClipParametersWindow(ResettableWindow):
                                                     else dpg.add_drag_int
                                                 )
                                                 add_func(
-                                                    min_value=input_channel.get_parameter("min").value,
-                                                    max_value=input_channel.get_parameter("max").value,
+                                                    min_value=input_channel.get_parameter(
+                                                        "min"
+                                                    ).value,
+                                                    max_value=input_channel.get_parameter(
+                                                        "max"
+                                                    ).value,
                                                     source=f"{input_channel.id}.value",
                                                     width=95,
                                                     callback=APP.update_input_channel_ext_value_callback,
@@ -2660,17 +2743,27 @@ class ClipParametersWindow(ResettableWindow):
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
                                             callback=APP.action_callback,
-                                            user_data=SelectInputNode({"clip": clip, "channel": input_channel})
+                                            user_data=SelectInputNode(
+                                                {"clip": clip, "channel": input_channel}
+                                            ),
                                         )
-                                        dpg.bind_item_theme(f"{input_channel.id}.name_button", get_node_tag(input_channel) + ".theme")
+                                        dpg.bind_item_theme(
+                                            f"{input_channel.id}.name_button",
+                                            get_node_tag(input_channel) + ".theme",
+                                        )
 
                                         dpg.add_text(default_value="color")
 
                                         def update_color(sender, app_data, user_data):
                                             # Color picker returns values between 0 and 1. Convert
                                             # to 255 int value.
-                                            rgb = [int(util.clamp(v * 255, 0, 255)) for v in app_data]
-                                            APP.update_channel_value_callback(sender, app_data, user_data)
+                                            rgb = [
+                                                int(util.clamp(v * 255, 0, 255))
+                                                for v in app_data
+                                            ]
+                                            APP.update_channel_value_callback(
+                                                sender, app_data, user_data
+                                            )
 
                                         dpg.add_drag_intx(
                                             source=f"{input_channel.id}.value",
@@ -2686,15 +2779,15 @@ class ClipParametersWindow(ResettableWindow):
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
                                             callback=APP.action_callback,
-                                            user_data=SelectInputNode({"clip": clip, "channel": input_channel})
+                                            user_data=SelectInputNode(
+                                                {"clip": clip, "channel": input_channel}
+                                            ),
                                         )
                                         dpg.add_text(default_value="button")
 
                                         def update_button(sender, app_data, user_data):
                                             APP.update_channel_value_callback(
-                                                sender,
-                                                int(app_data),
-                                                user_data
+                                                sender, int(app_data), user_data
                                             )
 
                                         dpg.add_checkbox(
@@ -2704,19 +2797,35 @@ class ClipParametersWindow(ResettableWindow):
                                         )
 
                                     param_strs = []
-                                    for parameter_index, parameter in enumerate(input_channel.parameters):
+                                    for parameter_index, parameter in enumerate(
+                                        input_channel.parameters
+                                    ):
                                         if str(parameter.value):
-                                            param_strs.append(f"{parameter.name}: {parameter.value}")
+                                            param_strs.append(
+                                                f"{parameter.name}: {parameter.value}"
+                                            )
                                     dpg.add_text(default_value=", ".join(param_strs))
 
                                     # Edit
-                                    def show_properties_window(sender, app_data, user_data):
+                                    def show_properties_window(
+                                        sender, app_data, user_data
+                                    ):
                                         APP._properties_buffer.clear()
-                                        dpg.configure_item(get_properties_window_tag(user_data), show=True)
-                                    dpg.add_button(label="Edit", callback=show_properties_window, user_data=input_channel)
+                                        dpg.configure_item(
+                                            get_properties_window_tag(user_data),
+                                            show=True,
+                                        )
+
+                                    dpg.add_button(
+                                        label="Edit",
+                                        callback=show_properties_window,
+                                        user_data=input_channel,
+                                    )
 
                                     # Right click for input channel name button
-                                    with dpg.popup(f"{input_channel.id}.name_button", mousebutton=1):
+                                    with dpg.popup(
+                                        f"{input_channel.id}.name_button", mousebutton=1
+                                    ):
                                         dpg.add_menu_item(
                                             label="Copy",
                                         )
@@ -2739,10 +2848,12 @@ class ClipParametersWindow(ResettableWindow):
                         policy=dpg.mvTable_SizingStretchProp,
                     ):
                         dpg.add_table_column(
-                            label="Output", tag=f"clip_parameters.output.table.column.input"
+                            label="Output",
+                            tag=f"clip_parameters.output.table.column.input",
                         )
                         dpg.add_table_column(
-                            label="Value", tag=f"clip_parameters.output.table.column.type"
+                            label="Value",
+                            tag=f"clip_parameters.output.table.column.type",
                         )
                         for output_index, output in enumerate(clip.outputs):
                             if output.deleted:
@@ -2765,4 +2876,3 @@ class ClipParametersWindow(ResettableWindow):
                                     add_output_row(output_channel)
                             else:
                                 add_output_row(output)
-
