@@ -898,26 +898,28 @@ class ClipPreset(Identifier):
             )
 
 
-class GlobalClipPreset(Identifier):
+class MultiClipPreset(Identifier):
     def __init__(self, name=None, clip_presets=None):
         super().__init__()
         self.name = name
-        self.global_presets = clip_presets or []
+        self.presets = clip_presets or []
 
     def execute(self):
-        for clip_preset in self.global_presets:
+        start = time.time()
+        for clip_preset in self.presets:
             track, clip, preset = clip_preset
-            STATE.execute(f"play_clip {track.id} {clip.id}")
+            STATE.execute(f"set_clip {track.id} {clip.id}")
             preset.execute()
+        STATE.start()
 
     def serialize(self):
         data = super().serialize()
         data.update(
             {
                 "name": self.name,
-                "global_presets": [
+                "presets": [
                     f"{track.id}:{clip.id}:{preset.id}"
-                    for track, clip, preset in self.global_presets
+                    for track, clip, preset in self.presets
                 ],
             }
         )
@@ -926,9 +928,9 @@ class GlobalClipPreset(Identifier):
     def deserialize(self, data):
         super().deserialize(data)
         self.name = data["name"]
-        for global_preset_ids in data["global_presets"]:
-            track_id, clip_id, preset_id = global_preset_ids.split(":")
-            self.global_presets.append(
+        for preset_ids in data["presets"]:
+            track_id, clip_id, preset_id = preset_ids.split(":")
+            self.presets.append(
                 (
                     UUID_DATABASE[track_id],
                     UUID_DATABASE[clip_id],
@@ -1117,10 +1119,14 @@ class Clip(Identifier):
             GlobalStorage.set(input_.name, CodeEditorChannel(input_))
 
     def start(self, restart=True):
-        self.code.reload()
-        self.playing = True
         if restart:
             self.time = 0
+
+        if self.playing:
+            return
+
+        self.code.reload()
+        self.playing = True
 
     def stop(self):
         self.playing = False
@@ -1841,7 +1847,7 @@ class ProgramState(Identifier):
         self.time_since_start_beat = 0
         self.time_since_start_s = 0
 
-        self.global_presets = []
+        self.multi_clip_presets = []
         self.code = Code(GLOBAL_CODE_ID)
 
         self.trigger_manager = TriggerManager()
@@ -1859,6 +1865,9 @@ class ProgramState(Identifier):
             self.start()
 
     def start(self):
+        if self.playing:
+            return
+
         # Load global functions
         try:
             self.code.reload()
@@ -1912,8 +1921,8 @@ class ProgramState(Identifier):
                 None if device is None else device.serialize()
                 for device in self.io_outputs
             ],
-            "global_presets": [
-                global_preset.serialize() for global_preset in self.global_presets
+            "multi_clip_presets": [
+                mcp.serialize() for mcp in self.multi_clip_presets
             ],
         }
 
@@ -1954,10 +1963,10 @@ class ProgramState(Identifier):
             if isinstance(device, MidiOutputDevice):
                 MIDI_OUTPUT_DEVICES[device.device_name] = device
 
-        for global_preset_data in data.get("global_presets", []):
-            global_preset = GlobalClipPreset()
-            global_preset.deserialize(global_preset_data)
-            self.global_presets.append(global_preset)
+        for multi_clip_preset_data in data.get("multi_clip_presets", []):
+            multi_clip_preset = MultiClipPreset()
+            multi_clip_preset.deserialize(multi_clip_preset_data)
+            self.multi_clip_presets.append(multi_clip_preset)
 
         # Play each global clip at least once to prepopulate any required vars
         for clip in self.global_track.clips:
@@ -2128,23 +2137,23 @@ class ProgramState(Identifier):
 
             return Result(True, preset)
 
-        elif cmd == "add_global_preset":
-            all_global_preset_ids = toks[1].split(",")
-            global_preset_name = " ".join(toks[2:])
+        elif cmd == "add_multi_clip_preset":
+            all_multi_clip_preset_ids = toks[1].split(",")
+            multi_clip_preset_name = " ".join(toks[2:])
 
             clip_presets = []
-            for global_preset_id in all_global_preset_ids:
-                track_id, clip_id, preset_id = global_preset_id.split(":")
+            for multi_clip_preset_id in all_multi_clip_preset_ids:
+                track_id, clip_id, preset_id = multi_clip_preset_id.split(":")
                 track = self.get_obj(track_id)
                 clip = self.get_obj(clip_id)
                 preset = self.get_obj(preset_id)
                 clip_presets.append((track, clip, preset))
 
-            global_preset = GlobalClipPreset(
-                global_preset_name, clip_presets=clip_presets
+            multi_clip_preset = MultiClipPreset(
+                multi_clip_preset_name, clip_presets=clip_presets
             )
-            self.global_presets.append(global_preset)
-            return Result(True, global_preset)
+            self.multi_clip_presets.append(multi_clip_preset)
+            return Result(True, multi_clip_preset)
 
         elif cmd == "add_sequence":
             data_string = " ".join(toks[1::])
@@ -2372,11 +2381,7 @@ class ProgramState(Identifier):
             return Result(True, new_device)
 
     def get_obj(self, id_):
-        try:
-            return UUID_DATABASE[id_]
-        except Exception as e:
-            print(UUID_DATABASE)
-            raise
+        return UUID_DATABASE[id_]
 
     def channel_from_key(self, key):
         return self.key_channel_map.get(key)

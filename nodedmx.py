@@ -1,18 +1,27 @@
 """
 TODO:
-    * Code editing
+    * [X] Code editing/Saving
+    * [x] Performance Layout
+    * Clean up transcendent project
+    * Multi clip preset (editing, reorder, colors)
+    * Better simulator
+    * Test creating project from scratch
+
+    For public release:
+    * > Implement robust copy/paste/duplicate (clips, automation curves, input channels, )
+    * Clean up private vars
+    * self.app.state in GUI classes instead of self.state
+    * warnings when in performance mode and making changes
+    * Compile into binary (pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --onefile nodedmx.py)
+
+    * Make APP not global
     * ? MIDI scaling (Test)
     * ? Delete unused code
     * X Finish Clip Parameteres Window (implement Edit button and input right click menu)
     * X Global code in transcedent project should scale inputs into a new variable that's used globally (Fixed by MIDI scaling)
     * X Play each global track once on init
-    * Performance Layout
-    * > Implement robust copy/paste/duplicate (clips, automation curves, input channels, )
-    * Better simulator
-    * Clean up private vars
-    * Compile into binary (pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --onefile nodedmx.py)
     * All logs to all appear in console
-    * self.app.state in GUI classes instead of self.state
+    * Combine state logger with python logger
 
     * Preview outputs
     * Convert remaining windows to objects
@@ -122,6 +131,8 @@ def get_channel_preset_theme(preset):
 
 
 class Application:
+    """Runs the main dpg loop and state updates."""
+
     def __init__(self, debug):
         # Debug flag.
         self.debug = debug
@@ -130,9 +141,8 @@ class Application:
         self.state = model.ProgramState()
 
         # State of GUI elements.
+        # TODO: Simplify I/O
         self.gui_state = {
-            # Position of the nodes in the node editor.
-            "node_positions": {},
             # I/O type
             "io_types": {
                 "inputs": [None] * 5,
@@ -184,9 +194,7 @@ class Application:
         self._active_clip_slot = None
         self._active_output_channel = None
         self._active_input_channel = None
-
-        self._last_selected_preset_button_tag = None
-        self._last_selected_preset_theme_tag = None
+        self._active_presets = {}
 
         self._properties_buffer = defaultdict(dict)
         self._clip_preset_buffer = {}
@@ -194,7 +202,7 @@ class Application:
         self._new_sequence_duration = {}
         self._n_sequence_rows = 0
 
-        self._tap_tempo_buffer = [0, 0, 0, 0]
+        self._tap_tempo_buffer = [0, 0, 0, 0, 0]
         self._quantize_amount = None
 
         self.ctrl = False
@@ -208,9 +216,9 @@ class Application:
         self._play_button_color = [0, 255, 0, 60]
 
         # Windows
-        self.performance_preset_window = None
-        self.global_performance_preset_window = None
-        self.save_new_global_performance_preset_window = None
+        self.clip_preset_window = None
+        self.multi_clip_preset_window = None
+        self.save_new_multi_clip_preset_window = None
         self.clip_automation_presets_window = None
         self.global_storage_debug_window = None
         self.io_window = None
@@ -233,33 +241,41 @@ class Application:
         logging.debug("Create dearpygui context")
         dpg.create_context()
 
+        # Initialize dpg values
+        logging.debug("Initializing value registry")
         with dpg.value_registry():
-            # Global Variables
-            logging.debug("Initializing global value registry")
+            # The last midi message received
             dpg.add_string_value(default_value="", tag="last_midi_message")
+            # Number of global elements
             dpg.add_int_value(default_value=0, tag="n_global_storage_elements")
 
             # Output Channel Variables
-            # Since these are shared betwene tracks, make them globally here.
-            logging.debug("Initializing state value registry")
+            # Since these are shared between tracks, make them globally here.
             for output_channel in self.get_all_valid_clip_output_channels():
                 tag = f"{output_channel.id}.value"
-                logging.debug(f"\t{tag}")
                 add_func = {
-                    "int": dpg.add_float_value,
+                    "float": dpg.add_float_value,
                     "int": dpg.add_int_value,
                     "bool": dpg.add_int_value,
                     "any": dpg.add_float_value,
                 }[output_channel.dtype]
                 add_func(tag=tag)
 
-        logging.debug("Initializing window settings")
-        dpg.set_viewport_resize_callback(callback=self.window_manager.resize_windows_callback)
+            # Code text
+            def create_text(obj):
+                dpg.add_string_value(tag=get_code_window_tag(obj) + ".text", default_value=obj.code.read())
+
+            create_text(self.state)
+            for track in self.state.tracks:
+                create_text(track)
+                for clip in track.clips:
+                    if util.valid(clip):
+                        create_text(clip)
 
         # Create main viewport.
         logging.debug("Create viewport")
         dpg.create_viewport(
-            title=f"NodeDMX [{self.state.project_name}] *",
+            title=f"CodeDMX [{self.state.project_name}] *",
             width=gui.SCREEN_WIDTH,
             height=gui.SCREEN_HEIGHT,
             x_pos=50,
@@ -275,11 +291,11 @@ class Application:
         self.console_window = gui.ConsoleWindow(self.state)
 
         logging.debug("Creating performance windows")
-        self.performance_preset_window = gui.PerformancePresetWindow(self.state)
-        self.save_new_global_performance_preset_window = (
-            gui.SaveNewGlobalPerformancePresetWindow(self.state)
+        self.clip_preset_window = gui.ClipPresetWindow(self.state)
+        self.save_new_multi_clip_preset_window = (
+            gui.SaveNewMultiClipPresetWindow(self.state)
         )
-        self.global_performance_preset_window = gui.GlobalPerformancePresetWindow(
+        self.multi_clip_preset_window = gui.MultiClipPresetWindow(
             self.state
         )
         self.clip_automation_presets_window = gui.ClipAutomationPresetWindow(self.state)
@@ -356,11 +372,15 @@ class Application:
                         ),
                     )
 
+        logging.debug("Initializing window settings")
+        dpg.set_viewport_resize_callback(callback=self.window_manager.resize_windows_callback)
+
         self.restore_gui_state()
 
         dpg.setup_dearpygui()
         dpg.show_viewport()
-        dpg.show_item_registry()
+        #dpg.show_item_registry()
+        #dpg.show_metrics()
 
     def main_loop(self):
         logging.debug("Starting main loop")
@@ -376,6 +396,7 @@ class Application:
             while dpg.is_dearpygui_running():
                 self.update_clip_window()
                 with self.lock:
+                    self.update_clip_preset_window()
                     self.update_gui_from_state()
                 dpg.render_dearpygui_frame()
             dpg.destroy_context()
@@ -383,8 +404,7 @@ class Application:
             import traceback
             logger.warning(traceback.format_exc())
             logger.warning(e)
-            if self.debug:
-                raise e
+            raise e
 
     def state_loop(self):
         # Runs at 60 Hz
@@ -412,9 +432,17 @@ class Application:
         Should always use this function instead of ProgramState::execute
         directly, so that the Application knows when the state is modified.
         """
-        dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}] *")
+        dpg.set_viewport_title(f"CodeDMX [{self.state.project_name}] *")
         result = self.state.execute(command)
-        self.clip_params_window.reset()
+
+        skip = [
+            "update_automation_point",
+            "set_clip",
+            "add_multi_clip_preset",
+        ]
+        if not any(kw in command for kw in skip):
+            self.clip_params_window.reset()
+
         return result
 
     def action(self, action: gui.GuiAction):
@@ -434,6 +462,7 @@ class Application:
 
                 if util.valid(clip) and clip == self._active_clip:
                     clip_color[2] += 255
+                    clip_color[1] += 50
 
                 if util.valid(clip) and clip.playing:
                     clip_color[1] += 255
@@ -463,6 +492,18 @@ class Application:
                 dpg.highlight_table_column(
                     "clip_window.table", track_i, color=[0, 0, 0, 0]
                 )
+
+    def update_clip_preset_window(self):
+        for track in self.state.tracks:
+            active_preset = self._active_presets.get(track.id, None)
+            for clip in track.clips:
+                if util.valid(clip):
+                    for preset in clip.presets:
+                        button_tag = get_preset_button_tag(preset)
+                        if active_preset == preset:
+                            dpg.bind_item_theme(button_tag, "selected_preset2.theme")
+                        else:
+                            dpg.bind_item_theme(button_tag, get_channel_preset_theme(preset))
 
     def add_clip_preset_to_menu(self, clip, preset, before=None):
         menu_tag = f"{self.clip_params_window.tag}.menu_bar"
@@ -940,6 +981,12 @@ class Application:
                 user_data=(input_channel, automation),
             )
             dpg.add_menu_item(
+                tag=f"{preset_sub_menu_tag}.duplicate",
+                label="Duplicate",
+                callback=self.duplicate_channel_preset_callback,
+                user_data=automation,
+            )
+            dpg.add_menu_item(
                 tag=f"{preset_sub_menu_tag}.delete",
                 label="Delete",
                 callback=self.delete_automation_callback,
@@ -1284,6 +1331,36 @@ class Application:
                         dpg.add_button(label="Cancel", callback=cancel)
 
     def create_themes(self):
+        # Initialize global theme
+        #with dpg.theme() as global_theme:
+
+            #with dpg.theme_component(dpg.mvAll):
+                #dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (40, 40, 40), category=dpg.mvThemeCat_Core)
+                #dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (40, 40, 40), category=dpg.mvThemeCat_Core)
+                #dpg.add_theme_color(dpg.mvThemeCol_Border, (20, 20, 20), category=dpg.mvThemeCat_Core)
+        #
+        #        # Buttons
+        #        dpg.add_theme_color(dpg.mvThemeCol_Button, (0, 15, 40), category=dpg.mvThemeCat_Core)
+        #
+        #        # Table
+        #        dpg.add_theme_color(dpg.mvThemeCol_TableHeaderBg, (0, 35, 70), category=dpg.mvThemeCat_Core)
+        #
+        #        # Menu
+        #        dpg.add_theme_color(dpg.mvThemeCol_MenuBarBg, (0, 15, 50), category=dpg.mvThemeCat_Core)
+        #
+        #        # Text
+        #        dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 255, 255), category=dpg.mvThemeCat_Core)
+        #
+        #dpg.bind_theme(global_theme)
+
+        with dpg.theme(tag="clip_text_theme") as button_theme:
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(
+                    dpg.mvThemeCol_Text,
+                    [200, 255, 255, 255],
+                    category=dpg.mvThemeCat_Core,
+                )
+
         with dpg.theme(tag="red_button_theme") as button_theme:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(
@@ -1412,7 +1489,20 @@ class Application:
                 )
                 dpg.add_theme_color(
                     target=dpg.mvThemeCol_Button,
-                    value=[255, 255, 0, 255],
+                    value=[215, 255, 0, 255],
+                    category=dpg.mvThemeCat_Core,
+                )
+
+        with dpg.theme(tag="selected_preset2.theme"):
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(
+                    target=dpg.mvThemeCol_Text,
+                    value=[255, 255, 100, 255],
+                    category=dpg.mvThemeCat_Core,
+                )
+                dpg.add_theme_color(
+                    target=dpg.mvThemeCol_Button,
+                    value=[255, 255, 0, 70],
                     category=dpg.mvThemeCat_Core,
                 )
 
@@ -1595,8 +1685,6 @@ class Application:
             self._play_button_color[1] = g
             dpg.configure_item("transport.play_button.play.theme.color", value=self._play_button_color)
 
-
-
         # Cache the active clip, since it can change while this function is running
         c_active_clip = self._active_clip
         c_active_input_channel = self._active_input_channel
@@ -1774,42 +1862,46 @@ class Application:
             dpg.delete_item(preset_window_tag)
 
         def save(sender, app_data, user_data):
-            presets = []
-            for i, channel in enumerate(clip.inputs):
-                include = dpg.get_value(f"preset.{i}.include")
-                if include:
-                    presets.append(
-                        {
-                            "channel": channel.id,
-                            "automation": self._clip_preset_buffer[channel.id],
-                            "speed": None
-                            if channel.is_constant
-                            else dpg.get_value(f"preset.{i}.speed"),
-                        }
-                    )
-
-            if presets:
-                data = {
-                    "clip": clip.id,
-                    "name": dpg.get_value("preset.name"),
-                    "preset_info": presets,
-                    "preset_id": preset.id if editing else None,
-                }
-
-                result = self.execute_wrapper(f"add_clip_preset {json.dumps(data)}")
-                if result.success:
-                    if editing:
-                        dpg.configure_item(
-                            get_preset_menu_bar_tag(preset), label=preset.name
+            # TODO: Anything that modifies the state should be wrapped with a lock
+            # OR, anything that modfies GUI items manipulated in main_loop need to be around a lock
+            with self.lock:
+                presets = []
+                for i, channel in enumerate(clip.inputs):
+                    include = dpg.get_value(f"preset.{i}.include")
+                    if include:
+                        presets.append(
+                            {
+                                "channel": channel.id,
+                                "automation": self._clip_preset_buffer[channel.id],
+                                "speed": None
+                                if channel.is_constant
+                                else dpg.get_value(f"preset.{i}.speed"),
+                            }
                         )
-                    else:
-                        new_preset = result.payload
-                        self.create_preset_theme(new_preset)
 
-                    self._clip_preset_buffer.clear()
-                    dpg.delete_item("preset_window")
-                else:
-                    logger.warning("Failed to add clip preset")
+                if presets:
+                    data = {
+                        "clip": clip.id,
+                        "name": dpg.get_value("preset.name"),
+                        "preset_info": presets,
+                        "preset_id": preset.id if editing else None,
+                    }
+
+                    result = self.execute_wrapper(f"add_clip_preset {json.dumps(data)}")
+                    if result.success:
+                        if editing:
+                            dpg.configure_item(
+                                get_preset_menu_bar_tag(preset), label=preset.name
+                            )
+                        else:
+                            new_preset = result.payload
+                            self.create_preset_theme(new_preset)
+                            self.clip_preset_window.reset()
+
+                        self._clip_preset_buffer.clear()
+                        dpg.delete_item("preset_window")
+                    else:
+                        logger.warning("Failed to add clip preset")
 
         def set_automation(sender, app_data, user_data):
             channel, automation = user_data
@@ -2215,6 +2307,7 @@ class Application:
             def delete():
                 self.delete_node(obj)
                 dpg.delete_item(confirm_window)
+                self.window_manager.reset_all()
 
             def cancel():
                 dpg.delete_item(confirm_window)
@@ -2317,6 +2410,17 @@ class Application:
                 callback=self.delete_track_output_group_callback,
                 user_data=(track, output_channel_group),
             )
+            # TODO: Consolidate with code that creates this during init
+            with dpg.value_registry():
+                for output_channel in output_channel_group.outputs:
+                    tag = f"{output_channel.id}.value"
+                    add_func = {
+                        "float": dpg.add_float_value,
+                        "int": dpg.add_int_value,
+                        "bool": dpg.add_int_value,
+                        "any": dpg.add_float_value,
+                    }[output_channel.dtype]
+                    add_func(tag=tag)
 
     def create_viewport_menu_bar(self):
         def save_callback(sender, app_data):
@@ -2448,13 +2552,13 @@ class Application:
                 dpg.add_menu_item(
                     label="Clip Presets",
                     callback=self.action_callback,
-                    user_data=gui.ShowWindow(self.performance_preset_window),
+                    user_data=gui.ShowWindow(self.clip_preset_window),
                 )
 
                 dpg.add_menu_item(
-                    label="Global Presets",
+                    label="Multi Clip Presets",
                     callback=self.action_callback,
-                    user_data=gui.ShowWindow(self.global_performance_preset_window),
+                    user_data=gui.ShowWindow(self.multi_clip_preset_window),
                 )
 
                 dpg.add_menu_item(
@@ -2509,6 +2613,23 @@ class Application:
                     else "Mode: Performance",
                 )
                 self.window_manager.resize_all()
+                self.window_manager.reset_all()
+
+                if self.state.mode == "edit":
+                    # Hide performance windows
+                    windows = [
+                        self.clip_preset_window,
+                        self.multi_clip_preset_window,
+                        self.clip_automation_presets_window,
+                    ]
+                else:
+                    # Hide edit windows
+                    windows = [
+                        self.code_window,
+                        self.console_window,
+                    ]
+                for window in windows:
+                    window.hide()
 
             dpg.add_button(
                 label="Mode: Edit",
@@ -2544,7 +2665,8 @@ class Application:
                 {"clip": self._active_clip, "channel": input_channel}
             ).execute()
 
-        self.window_manager.resize_all()
+        #self.window_manager.resize_all()
+        #self.window_manager.reset_all()
 
     def shift_points_callback(self, sender, app_data, user_data):
         if util.valid(self._active_input_channel.active_automation):
@@ -2572,11 +2694,14 @@ class Application:
         if result.success:
             self.reset_automation_plot(self._active_input_channel)
 
-    def duplicate_channel_preset_callback(self):
-        if self._active_input_channel is None:
+    def duplicate_channel_preset_callback(self, sender, app_data, user_data):
+        if user_data is not None:
+            automation = user_data
+        elif self._active_input_channel is not None:
+            automation = self._active_input_channel.active_automation
+        else:
             return
 
-        automation = self._active_input_channel.active_automation
         if automation is None:
             return
 
@@ -2713,7 +2838,7 @@ class Application:
             # TODO: Figure out what else needs to be deleted here.
             dpg.delete_item(get_properties_window_tag(obj))
         else:
-            RuntimeError(f"Failed to delete: {node_id}")
+            RuntimeError(f"Failed to delete: {obj.id}")
 
     def update_parameter_buffer_callback(self, sender, app_data, user_data):
         parameter, parameter_index = user_data
@@ -2793,26 +2918,10 @@ class Application:
         if util.valid(self._active_input_channel):
             self.reset_automation_plot(self._active_input_channel)
 
-        # This will only exist if the user has opened the "Presets Performance Window"
         preset_button_tag = get_preset_button_tag(preset)
-        if dpg.does_item_exist(preset_button_tag):
-            # Reset last button
-            if (
-                self._last_selected_preset_button_tag is not None
-                and self._last_selected_preset_theme_tag is not None
-            ):
-                dpg.bind_item_theme(
-                    self._last_selected_preset_button_tag,
-                    self._last_selected_preset_theme_tag,
-                )
+        dpg.bind_item_theme(preset_button_tag, "selected_preset2.theme")
 
-            # Set new button theme
-            self._last_selected_preset_button_tag = preset_button_tag
-            self._last_selected_preset_theme_tag = get_channel_preset_theme(preset)
-
-            dpg.bind_item_theme(preset_button_tag, "selected_preset.theme")
-
-            self.clip_automation_presets_window.reset()
+        self.clip_automation_presets_window.reset()
 
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
@@ -3210,7 +3319,7 @@ class Application:
         with open(self.state.project_file_path, "w") as f:
             f.write(json.dumps(data, indent=4, sort_keys=False))
 
-        dpg.set_viewport_title(f"NodeDMX [{self.state.project_name}]")
+        dpg.set_viewport_title(f"CodeDMX [{self.state.project_name}]")
 
     def save_code(self):
         if not os.path.exists(self.state.project_folder_path):
@@ -3267,10 +3376,10 @@ class Application:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="NodeDMX [BETA]")
+    parser = argparse.ArgumentParser(description="CodeDMX [BETA]")
     parser.add_argument(
-        "--project", default="C:\\Users\\marcd\\Desktop\\Code\\nodedmx\\projects\\transcedent5-v3\\transcedent5-v3.ndmx", dest="project_file_path", help="Project file path."
-        #"--project", default=None, dest="project_file_path", help="Project file path."
+        #"--project", default="C:\\Users\\marcd\\Desktop\\Code\\nodedmx\\projects\\transcedent5-v3\\transcedent5-v3.ndmx", dest="project_file_path", help="Project file path."
+        "--project", default=None, dest="project_file_path", help="Project file path."
     )
 
     parser.add_argument(
