@@ -38,6 +38,7 @@ jobs:
           source venv/bin/activate || venv\\Scripts\\activate
           python -m pip install --upgrade pip
           pip install pyinstaller
+          pip install Pillow
           pip install -r requirements.txt
 
       - name: Build
