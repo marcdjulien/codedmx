@@ -28,7 +28,7 @@ class Fixture:
         self.address = address
 
 
-FIXTURE_DIR = "fixtures"
+FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
 FIXTURES = []
 
