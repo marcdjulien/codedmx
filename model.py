@@ -152,10 +152,7 @@ class Channel(Identifier):
         self.name = kwargs.get("name", "Channel").replace(" ", "")
 
     def get(self):
-        try:
-            return cast[self.dtype](self._value)
-        except:
-            return 0
+        return cast[self.dtype](self._value)
 
     def set(self, value):
         self._value = value
@@ -373,7 +370,12 @@ class AutomatableSourceNode(SourceNode):
         self.last_beat = 0
         self.is_constant = False
 
+        self.history = [self.get()]*100
+
     def update(self, clip_beat):
+        self.history.pop(0)
+        self.history.append(self.get())
+
         if self.active_automation is None:
             return
 
@@ -407,6 +409,7 @@ class AutomatableSourceNode(SourceNode):
         return self.ext_channel.get()
 
     def ext_set(self, value):
+        # TODO: Use clamp
         value = max(self.min_parameter.value, value)
         value = min(self.max_parameter.value, value)
         self.ext_channel.set(value)
@@ -595,9 +598,6 @@ class ColorNode(SourceNode):
     def set(self, value):
         self.channel.set(value)
 
-    def update_parameter(self, index, value):
-        return super().update_parameter(index, value)
-
 
 class ButtonNode(SourceNode):
     nice_title = "Button"
@@ -607,18 +607,9 @@ class ButtonNode(SourceNode):
         kwargs.setdefault("size", 1)
         super().__init__(**kwargs)
         self.input_type = "button"
-        self.value_parameter = Parameter("Value", value=False, dtype="bool")
-        self.add_parameter(self.value_parameter)
 
-    def update(self, clip_beat):
-        self.channel.set(int(self.value_parameter.value))
-
-    def update_parameter(self, index, value):
-        if self.parameters[index] == self.value_parameter:
-            self.parameters[index].value = value.lower() == "true"
-            return True
-        else:
-            return super().update_parameter(index, value)
+    def set(self, value):
+        self.channel.set(value)
 
 
 class OscInput(AutomatableSourceNode):
@@ -907,26 +898,28 @@ class ClipPreset(Identifier):
             )
 
 
-class GlobalClipPreset(Identifier):
+class MultiClipPreset(Identifier):
     def __init__(self, name=None, clip_presets=None):
         super().__init__()
         self.name = name
-        self.global_presets = clip_presets or []
+        self.presets = clip_presets or []
 
     def execute(self):
-        for clip_preset in self.global_presets:
+        start = time.time()
+        for clip_preset in self.presets:
             track, clip, preset = clip_preset
-            STATE.execute(f"play_clip {track.id} {clip.id}")
+            STATE.execute(f"set_clip {track.id} {clip.id}")
             preset.execute()
+        STATE.start()
 
     def serialize(self):
         data = super().serialize()
         data.update(
             {
                 "name": self.name,
-                "global_presets": [
+                "presets": [
                     f"{track.id}:{clip.id}:{preset.id}"
-                    for track, clip, preset in self.global_presets
+                    for track, clip, preset in self.presets
                 ],
             }
         )
@@ -935,9 +928,9 @@ class GlobalClipPreset(Identifier):
     def deserialize(self, data):
         super().deserialize(data)
         self.name = data["name"]
-        for global_preset_ids in data["global_presets"]:
-            track_id, clip_id, preset_id = global_preset_ids.split(":")
-            self.global_presets.append(
+        for preset_ids in data["presets"]:
+            track_id, clip_id, preset_id = preset_ids.split(":")
+            self.presets.append(
                 (
                     UUID_DATABASE[track_id],
                     UUID_DATABASE[clip_id],
@@ -1126,10 +1119,14 @@ class Clip(Identifier):
             GlobalStorage.set(input_.name, CodeEditorChannel(input_))
 
     def start(self, restart=True):
-        self.code.reload()
-        self.playing = True
         if restart:
             self.time = 0
+
+        if self.playing:
+            return
+
+        self.code.reload()
+        self.playing = True
 
     def stop(self):
         self.playing = False
@@ -1609,8 +1606,11 @@ def midi_value(msg):
     if msg.type == "control_change":
         value = msg.value
         note_control = msg.control
-    elif msg.type in ["note_on", "note_off"]:
+    elif msg.type in ["note_on"]:
         value = msg.velocity
+        note_control = msg.note
+    elif msg.type in ["note_off"]:
+        value = 0
         note_control = msg.note
     elif msg.type == "pitchwheel":
         value = msg.pitch
@@ -1659,6 +1659,8 @@ class MidiInputDevice(IO):
                 for other_channel in channels:
                     if channel == other_channel:
                         self.channel_map[midi_channel][note_control].remove(channel)
+                        channel.get_parameter("device").value = ""
+                        channel.get_parameter("id").value = ""
                         break
 
     def reset(self):
@@ -1675,7 +1677,9 @@ class MidiInputDevice(IO):
             and note_control in self.channel_map[midi_channel]
         ):
             for channel in self.channel_map[midi_channel][note_control]:
-                channel.ext_set(value)
+                # TODO: Test this
+                # MIDI values are 0-127, scale to 255.
+                channel.ext_set(2*value)
 
         if value >= 127:
             STATE.trigger_manager.fire_triggers(
@@ -1828,7 +1832,8 @@ class ProgramState(Identifier):
 
         for i in range(N_TRACKS - 1):
             self.tracks.append(Track(f"Track {i}"))
-        self.tracks.append(Track(f"Global", global_track=True))
+        self.global_track = Track(f"Global", global_track=True)
+        self.tracks.append(self.global_track)
 
         self.io_outputs = [None] * 5
         self.io_inputs = [None] * 5
@@ -1842,7 +1847,7 @@ class ProgramState(Identifier):
         self.time_since_start_beat = 0
         self.time_since_start_s = 0
 
-        self.global_presets = []
+        self.multi_clip_presets = []
         self.code = Code(GLOBAL_CODE_ID)
 
         self.trigger_manager = TriggerManager()
@@ -1860,6 +1865,9 @@ class ProgramState(Identifier):
             self.start()
 
     def start(self):
+        if self.playing:
+            return
+
         # Load global functions
         try:
             self.code.reload()
@@ -1913,8 +1921,8 @@ class ProgramState(Identifier):
                 None if device is None else device.serialize()
                 for device in self.io_outputs
             ],
-            "global_presets": [
-                global_preset.serialize() for global_preset in self.global_presets
+            "multi_clip_presets": [
+                mcp.serialize() for mcp in self.multi_clip_presets
             ],
         }
 
@@ -1934,6 +1942,9 @@ class ProgramState(Identifier):
             new_track.deserialize(track_data)
             self.tracks[i] = new_track
 
+        self.global_track = self.tracks[-1]
+        assert self.global_track.global_track
+
         for i, device_data in enumerate(data["io_inputs"]):
             if device_data is None:
                 continue
@@ -1952,10 +1963,19 @@ class ProgramState(Identifier):
             if isinstance(device, MidiOutputDevice):
                 MIDI_OUTPUT_DEVICES[device.device_name] = device
 
-        for global_preset_data in data.get("global_presets", []):
-            global_preset = GlobalClipPreset()
-            global_preset.deserialize(global_preset_data)
-            self.global_presets.append(global_preset)
+        for multi_clip_preset_data in data.get("multi_clip_presets", []):
+            multi_clip_preset = MultiClipPreset()
+            multi_clip_preset.deserialize(multi_clip_preset_data)
+            self.multi_clip_presets.append(multi_clip_preset)
+
+        # Play each global clip at least once to prepopulate any required vars
+        for clip in self.global_track.clips:
+            if not util.valid(clip):
+                continue
+            self.execute(f"toggle_clip {self.global_track.id} {clip.id}")
+            self.update()
+            self.execute(f"toggle_clip {self.global_track.id} {clip.id}")
+        self.stop()
 
     def duplicate_obj(self, obj):
         data = obj.serialize()
@@ -2054,9 +2074,7 @@ class ProgramState(Identifier):
             return Result(True, new_output_group)
 
         elif cmd == "delete_node":
-            # TODO: Not using clip
-            clip_id = toks[1]
-            obj_id = toks[2]
+            obj_id = toks[1]
             obj = self.get_obj(obj_id)
             obj.deleted = True
             return Result(True)
@@ -2119,23 +2137,23 @@ class ProgramState(Identifier):
 
             return Result(True, preset)
 
-        elif cmd == "add_global_preset":
-            all_global_preset_ids = toks[1].split(",")
-            global_preset_name = " ".join(toks[2:])
+        elif cmd == "add_multi_clip_preset":
+            all_multi_clip_preset_ids = toks[1].split(",")
+            multi_clip_preset_name = " ".join(toks[2:])
 
             clip_presets = []
-            for global_preset_id in all_global_preset_ids:
-                track_id, clip_id, preset_id = global_preset_id.split(":")
+            for multi_clip_preset_id in all_multi_clip_preset_ids:
+                track_id, clip_id, preset_id = multi_clip_preset_id.split(":")
                 track = self.get_obj(track_id)
                 clip = self.get_obj(clip_id)
                 preset = self.get_obj(preset_id)
                 clip_presets.append((track, clip, preset))
 
-            global_preset = GlobalClipPreset(
-                global_preset_name, clip_presets=clip_presets
+            multi_clip_preset = MultiClipPreset(
+                multi_clip_preset_name, clip_presets=clip_presets
             )
-            self.global_presets.append(global_preset)
-            return Result(True, global_preset)
+            self.multi_clip_presets.append(multi_clip_preset)
+            return Result(True, multi_clip_preset)
 
         elif cmd == "add_sequence":
             data_string = " ".join(toks[1::])
@@ -2363,11 +2381,7 @@ class ProgramState(Identifier):
             return Result(True, new_device)
 
     def get_obj(self, id_):
-        try:
-            return UUID_DATABASE[id_]
-        except Exception as e:
-            print(UUID_DATABASE)
-            raise
+        return UUID_DATABASE[id_]
 
     def channel_from_key(self, key):
         return self.key_channel_map.get(key)
@@ -2401,6 +2415,7 @@ ALL_OUTPUT_TYPES = [
 
 STATE = None
 GlobalStorage = GlobalCodeStorage()
+Global = GlobalStorage
 
 # Weird hack.
 # Without this, the program will hang for several seconds
