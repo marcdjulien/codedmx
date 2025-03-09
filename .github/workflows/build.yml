@@ -43,7 +43,7 @@ jobs:
       - name: Build
         run: |
           source venv/bin/activate || venv\\Scripts\\activate
-          pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --add-data "fixtures/*:fixtures" --onefile --name codedmx codedmx.py
+          pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --icon=assets/icon-sm.png --add-data "fixtures/*:fixtures" --onefile --name codedmx codedmx.py
 
       - name: Verify Executable
         run: dist/codedmx --help
