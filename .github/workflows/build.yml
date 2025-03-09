@@ -1,0 +1,57 @@
+name: Build Executables
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  build_matrix:
+    strategy:
+      matrix:
+        os: ["ubuntu-22.04", "macos-latest", "windows-latest"]
+
+    name: Build Executable ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: "3.11"
+
+      - name: Create Virtual Environment
+        run: |
+          python -m venv venv
+
+      - name: Pip Install
+        run: |
+          source venv/bin/activate || venv\\Scripts\\activate
+          python -m pip install --upgrade pip
+          pip install pyinstaller
+          pip install -r requirements.txt
+
+      - name: Build
+        run: |
+          source venv/bin/activate || venv\\Scripts\\activate
+          pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --onefile --name codedmx codedmx.py
+
+      - name: Verify Executable
+        run: dist/codedmx --help
+
+      - name: Copy Build Info
+        run: |
+          mkdir -p dist/build_info
+          cp -r build/codedmx dist/build_info
+          cp codedmx.spec dist/build_info
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codedmx-${{ matrix.os }}
+          path: dist
