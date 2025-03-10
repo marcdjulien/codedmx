@@ -349,11 +349,10 @@ class SelectClip(GuiAction):
         track = self.params["track"]
         clip = self.params["clip"]
 
-        # Always reset code window.
-        if self.app.state.mode == "edit":
-            self.app.code_window.reset(show=True)
-
         if self.app._active_clip == clip:
+            # Always reset code window even if the clip is the same.
+            if self.app.state.mode == "edit":
+                self.app.code_window.reset(show=True)
             return
 
         self.app.save_last_active_clip()
@@ -371,6 +370,9 @@ class SelectClip(GuiAction):
         self.app.clip_automation_presets_window.reset(clip)
         self.app.help_window.reset()
         self.app.clip_params_window.reset()
+
+        if self.app.state.mode == "edit":
+            self.app.code_window.reset(show=True)
 
     def undo(self):
         self.app.save_last_active_clip()
