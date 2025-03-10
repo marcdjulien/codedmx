@@ -370,7 +370,7 @@ class AutomatableSourceNode(SourceNode):
         self.last_beat = 0
         self.is_constant = False
 
-        self.history = [self.get()] * 100
+        self.history = [self.get()]*100
 
     def update(self, clip_beat):
         self.history.pop(0)
@@ -1050,9 +1050,9 @@ class Code:
 
 
 class Clip(Identifier):
-    def __init__(self, outputs=[], global_clip=False):
+    def __init__(self, name="", outputs=[], global_clip=False):
         super().__init__()
-        self.name = ""
+        self.name = name
 
         self.inputs = []
         self.outputs = outputs
@@ -1679,7 +1679,7 @@ class MidiInputDevice(IO):
             for channel in self.channel_map[midi_channel][note_control]:
                 # TODO: Test this
                 # MIDI values are 0-127, scale to 255.
-                channel.ext_set(2 * value)
+                channel.ext_set(2*value)
 
         if value >= 127:
             STATE.trigger_manager.fire_triggers(
@@ -1921,7 +1921,9 @@ class ProgramState(Identifier):
                 None if device is None else device.serialize()
                 for device in self.io_outputs
             ],
-            "multi_clip_presets": [mcp.serialize() for mcp in self.multi_clip_presets],
+            "multi_clip_presets": [
+                mcp.serialize() for mcp in self.multi_clip_presets
+            ],
         }
 
         return data
@@ -2043,7 +2045,7 @@ class ProgramState(Identifier):
             clip_i = int(clip_i)
             track = self.get_obj(track_id)
             assert clip_i < len(track.clips)
-            track[clip_i] = Clip(track.outputs)
+            track[clip_i] = Clip(f"Clip #{clip_i}", track.outputs)
             return Result(True, track[clip_i])
 
         elif cmd == "create_source":

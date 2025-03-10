@@ -7,7 +7,6 @@ import mido
 import re
 import json
 import socket
-import threading
 
 import model
 import util
@@ -66,6 +65,7 @@ class WindowManager:
         self.window_info = {}
         self.screen_width = SCREEN_WIDTH
         self.screen_height = SCREEN_HEIGHT
+        self.update_window_size_info(self.screen_width, self.screen_height)
 
     def resize_all(self):
         self.resize_windows_callback(None, None, None)
@@ -113,6 +113,7 @@ class WindowManager:
             "clip_parameters_pos": clip_parameters_pos,
             "clip_parameters_size": clip_parameters_size,
         }
+
 
         # Initial window settings for Performance mode.
         clip_window_pos = (0, 18)
@@ -348,6 +349,10 @@ class SelectClip(GuiAction):
         track = self.params["track"]
         clip = self.params["clip"]
 
+        # Always reset code window.
+        if self.app.state.mode == "edit":
+            self.app.code_window.reset(show=True)
+
         if self.app._active_clip == clip:
             return
 
@@ -362,8 +367,6 @@ class SelectClip(GuiAction):
         for tag in self.app.tags["hide_on_clip_selection"]:
             dpg.configure_item(tag, show=False)
 
-        if self.app.state.mode == "edit":
-            self.app.code_window.reset()
 
         self.app.clip_automation_presets_window.reset(clip)
         self.app.help_window.reset()
@@ -378,7 +381,7 @@ class SelectClip(GuiAction):
             dpg.configure_item(tag, show=False)
 
 
-class SelectInputNode(GuiAction):
+class SelectInputChannel(GuiAction):
     def execute(self):
         clip = self.params["clip"]
         input_channel = self.params["channel"]
@@ -409,6 +412,9 @@ class SelectInputNode(GuiAction):
         APP.reset_automation_plot(input_channel)
 
         self.app._active_input_channel = input_channel
+
+        if self.app.state.mode == "edit":
+            self.app.code_window.hide()
 
 
 class CreateNewClip(GuiAction):
@@ -506,7 +512,7 @@ class CreateNewClip(GuiAction):
 
         with dpg.window(
             tag=window_tag,
-            label=f"Properties",
+            label="Properties",
             width=500,
             height=700,
             pos=(SCREEN_WIDTH / 3, SCREEN_HEIGHT / 3),
@@ -515,7 +521,7 @@ class CreateNewClip(GuiAction):
             modal=True,
             popup=True,
             no_title_bar=True,
-        ) as window:
+        ):
             properties_table_tag = f"{window_tag}.properties_table"
             with dpg.table(
                 header_row=True,
@@ -731,10 +737,13 @@ class Window:
         """Build the window."""
         raise NotImplementedError
 
+    def on_close(self, sender, app_data, user_data):
+        pass
+
     def _create(self):
         """Create and build the window."""
         self.configure_window()
-        self.window = dpg.window(*self.args, **self.kwargs)
+        self.window = dpg.window(*self.args, **self.kwargs, on_close=self.on_close)
         self.create()
 
     @property
@@ -776,16 +785,12 @@ class ResettableWindow(Window):
         self.height = kwargs.get("height", 1)
         super().__init__(state, *args, **kwargs)
 
-    def _create(self, show=None):
+    def _create(self):
         """Create and build the window."""
         self.kwargs["pos"] = self.position
         self.kwargs["width"] = self.width
         self.kwargs["height"] = self.height
         self.kwargs["no_focus_on_appearing"] = True
-
-        if show is not None:
-            self.kwargs["show"] = show
-
         super()._create()
 
     def reset(self, show=None, focus=False):
@@ -793,17 +798,25 @@ class ResettableWindow(Window):
         self.width = dpg.get_item_width(self.tag)
         self.height = dpg.get_item_height(self.tag)
 
-        try:
-            show = self.shown
-        except:
-            logger.warning("Failed to get show status")
-            show = None
+        if show is None:
+            try:
+                show = self.shown
+            except:
+                logger.warning("Failed to get show status")
+                show = None
 
         with APP.lock:
             dpg.delete_item(self.tag)
-            self._create(show=show)
+            self._create()
+
             if focus:
                 self.focus()
+
+            if show:
+                self.show()
+            else:
+                self.hide()
+
 
     def reset_callback(self, sender, app_data, user_data):
         self.reset(show=True)
@@ -815,7 +828,7 @@ class TrackPropertiesWindow(ResettableWindow):
         super().__init__(
             state,
             tag=get_output_configuration_window_tag(track),
-            label=f"Output Configuration",
+            label="Output Configuration",
             width=400,
             height=SCREEN_HEIGHT * 5 / 6,
             pos=(799, 60),
@@ -894,6 +907,9 @@ class TrackPropertiesWindow(ResettableWindow):
                     user_data=("restore", self.track, output_channel),
                 )
 
+    def on_close(self):
+        APP.clip_params_window.reset()
+
 
 class RenameWindow(Window):
     def __init__(self, state):
@@ -951,7 +967,7 @@ class InspectorWindow(Window):
         self.x_values = list(range(500))
         super().__init__(
             state,
-            label=f"Inspector",
+            label="Inspector",
             width=750,
             height=600,
             pos=(810, 0),
@@ -988,7 +1004,7 @@ class GlobalStorageDebugWindow(ResettableWindow):
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"Global Storage Debug",
+            label="Global Storage Debug",
             tag="global_storage_debug.gui.window",
             show=False,
         )
@@ -1018,7 +1034,7 @@ class RemapMidiDeviceWindow(ResettableWindow):
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"Remap MIDI Device",
+            label="Remap MIDI Device",
             tag="remap_midi_device.gui.window",
             show=False,
         )
@@ -1081,7 +1097,7 @@ class IOWindow(Window):
     def __init__(self, state):
         super().__init__(
             state,
-            label=f"I/O",
+            label="I/O",
             width=750,
             height=300,
             pos=(1180, 0),
@@ -1116,8 +1132,8 @@ class IOWindow(Window):
             ip_address = "Unknown"
 
         with self.window:
-            output_table_tag = f"io.outputs.table"
-            input_table_tag = f"io.inputs.table"
+            output_table_tag = "io.outputs.table"
+            input_table_tag = "io.inputs.table"
 
             def set_io_type(sender, app_data, user_data):
                 index, io_type, input_output, *args = user_data
@@ -1203,7 +1219,6 @@ class IOWindow(Window):
                             user_data=("create", i, "inputs"),
                         )
 
-                        connected_tag = f"{input_table_tag}.{i}.connected"
                         with dpg.group(horizontal=True):
                             dpg.add_button(
                                 label="Connect",
@@ -1278,7 +1293,6 @@ class IOWindow(Window):
                             user_data=("create", i, "outputs"),
                         )
 
-                        connected_tag = f"{output_table_tag}.{i}.connected"
                         dpg.add_button(
                             label="Connect",
                             callback=connect,
@@ -1295,7 +1309,7 @@ class GlobalStorageDebugWindow(ResettableWindow):
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"Global Storage Debug",
+            label="Global Storage Debug",
             tag="global_storage_debug.gui.window",
             show=False,
         )
@@ -1325,7 +1339,7 @@ class HelpWindow(ResettableWindow):
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"Help",
+            label="Help",
             tag="code_help.gui.window",
             show=False,
         )
@@ -1410,7 +1424,7 @@ class ClipPresetWindow(ResettableWindow):
             pos=(200, 100),
             width=-1,
             height=800,
-            label=f"< Clip Presets",
+            label="< Clip Presets",
             tag="clip_preset.gui.window",
             show=False,
         )
@@ -1468,7 +1482,7 @@ class ClipPresetWindow(ResettableWindow):
 
                     has_presets[track.id] = any_presets
 
-                clips_per_track = len(self.state.tracks[0].clips)
+                len(self.state.tracks[0].clips)
                 with dpg.table_row():
                     for track_i, track in enumerate(self.state.tracks):
                         if not has_presets[track.id]:
@@ -1510,7 +1524,7 @@ class MultiClipPresetWindow(ResettableWindow):
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"< Multi Clip Presets",
+            label="< Multi Clip Presets",
             tag="global_preset_window.gui.window",
             show=False,
         )
@@ -1556,7 +1570,7 @@ class SaveNewMultiClipPresetWindow(ResettableWindow):
             pos=(200, 100),
             width=500,
             height=500,
-            label=f"Save New Global Clip Preset",
+            label="Save New Global Clip Preset",
             tag="save_new_global_preset_window.gui.window",
             show=False,
             modal=True,
@@ -1653,7 +1667,7 @@ class ManageTriggerWindow(ResettableWindow):
             pos=(200, 100),
             width=800,
             height=800,
-            label=f"Triggers",
+            label="Triggers",
             tag="manage_trigger.gui.window",
             show=False,
         )
@@ -1701,7 +1715,7 @@ class AddNewTriggerWindow(ResettableWindow):
             pos=(300, 200),
             width=600,
             height=200,
-            label=f"New Trigger",
+            label="New Trigger",
             tag="new_trigger.gui.window",
             show=False,
         )
@@ -1798,7 +1812,7 @@ class AddNewTriggerWindow(ResettableWindow):
                         callback=self.enter_command_listen_mode,
                     )
 
-                with dpg.table_row(tag=f"new_trigger.table.save_cancel_row"):
+                with dpg.table_row(tag="new_trigger.table.save_cancel_row"):
                     dpg.add_group()
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="Save", callback=save)
@@ -1870,7 +1884,7 @@ class ClipAutomationPresetWindow(ResettableWindow):
         self.clip = None
         super().__init__(
             state,
-            label=f"< Input Presets",
+            label="< Input Presets",
             tag="clip_automation.gui.window",
             show=False,
             horizontal_scrollbar=True,
@@ -1981,7 +1995,7 @@ class ClipWindow(Window):
 
     def create(self):
         with self.window:
-            table_tag = f"clip_window.table"
+            table_tag = "clip_window.table"
             with dpg.table(
                 header_row=False,
                 tag=table_tag,
@@ -2166,6 +2180,9 @@ class CodeWindow(ResettableWindow):
         else:
             obj = clip
 
+        if obj is None:
+            return
+
         with self.window:
             dpg.configure_item(
                 self.tag, label=f"Code > {getattr(obj, 'name', 'Global')}"
@@ -2325,7 +2342,6 @@ class AutomationWindow(Window):
                         return
                     automation.name = app_data
 
-                    preset_menu_tag = f"{input_channel.id}.preset_menu"
                     preset_sub_menu_tag = get_preset_sub_menu_tag(automation)
                     dpg.configure_item(preset_sub_menu_tag, label=app_data)
 
@@ -2562,6 +2578,7 @@ class ClipParametersWindow(ResettableWindow):
     def __init__(self, state):
         super().__init__(
             state,
+            width=int(SCREEN_WIDTH*APP.window_manager.CLIP_PARAM_WINDOW_PERCENT[0]),
             tag="clip_parameters.gui.window",
             show=True,
             label="Select a Controller ^",
@@ -2573,6 +2590,21 @@ class ClipParametersWindow(ResettableWindow):
     def create(self):
         clip = APP._active_clip
         with self.window:
+            def set_window_percent_callback(sender, app_data, user_data):
+                # TODO: try/except here is s hack. Figure out how this
+                # causes an exception when selecting Presets in Clip Preset Window
+                try:
+                    width = dpg.get_item_width(dpg.get_item_alias(app_data))
+                    percent = width / APP.window_manager.screen_width
+                    APP.window_manager.CLIP_PARAM_WINDOW_PERCENT[0] = percent
+                    APP.window_manager.resize_all()
+                except Exception as e:
+                    logger.exception(e)
+
+            with dpg.item_handler_registry() as handler:
+                dpg.add_item_resize_handler(callback=set_window_percent_callback)
+            dpg.bind_item_handler_registry(self.tag, handler)
+
             if clip is None:
                 return
 
@@ -2610,21 +2642,6 @@ class ClipParametersWindow(ResettableWindow):
                     user_data=ShowWindow(APP.clip_automation_presets_window),
                 )
 
-            def set_window_percent(sender, app_data, user_data):
-                # TODO: try/except here is s hack. Figure out how this
-                # causes an exception when selecting Presets in Clip Preset Window
-                try:
-                    width = dpg.get_item_width(dpg.get_item_alias(app_data))
-                    percent = width / APP.window_manager.screen_width
-                    APP.window_manager.CLIP_PARAM_WINDOW_PERCENT[0] = percent
-                    APP.window_manager.resize_all()
-                except Exception as e:
-                    logger.exception(e)
-
-            with dpg.item_handler_registry() as handler:
-                dpg.add_item_resize_handler(callback=set_window_percent)
-            dpg.bind_item_handler_registry(self.tag, handler)
-
             with dpg.group(horizontal=True):
                 width = (
                     2
@@ -2645,30 +2662,30 @@ class ClipParametersWindow(ResettableWindow):
                         ):
                             dpg.add_table_column(
                                 label="Input",
-                                tag=f"clip_parameters.input.table.column.input",
+                                tag="clip_parameters.input.table.column.input",
                                 width_stretch=True,
                                 init_width_or_weight=0.2,
                             )
                             dpg.add_table_column(
                                 label="Type",
-                                tag=f"clip_parameters.input.table.column.type",
+                                tag="clip_parameters.input.table.column.type",
                                 width_stretch=True,
                                 init_width_or_weight=0.1,
                             )
                             dpg.add_table_column(
                                 label="Value",
-                                tag=f"clip_parameters.input.table.column.output",
+                                tag="clip_parameters.input.table.column.output",
                                 width_stretch=True,
                                 init_width_or_weight=0.2,
                             )
                             dpg.add_table_column(
                                 label="Parameters",
-                                tag=f"clip_parameters.input.table.column.parameters",
+                                tag="clip_parameters.input.table.column.parameters",
                                 width_stretch=True,
                                 init_width_or_weight=0.4,
                             )
                             dpg.add_table_column(
-                                tag=f"clip_parameters.input.table.column.edit",
+                                tag="clip_parameters.input.table.column.edit",
                                 width_stretch=True,
                                 init_width_or_weight=0.1,
                             )
@@ -2677,7 +2694,7 @@ class ClipParametersWindow(ResettableWindow):
                                 if input_channel.deleted:
                                     continue
 
-                                with dpg.table_row() as row:
+                                with dpg.table_row():
                                     if input_channel.input_type in [
                                         "int",
                                         "float",
@@ -2690,7 +2707,7 @@ class ClipParametersWindow(ResettableWindow):
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
                                             callback=APP.action_callback,
-                                            user_data=SelectInputNode(
+                                            user_data=SelectInputChannel(
                                                 {"clip": clip, "channel": input_channel}
                                             ),
                                         )
@@ -2743,7 +2760,7 @@ class ClipParametersWindow(ResettableWindow):
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
                                             callback=APP.action_callback,
-                                            user_data=SelectInputNode(
+                                            user_data=SelectInputChannel(
                                                 {"clip": clip, "channel": input_channel}
                                             ),
                                         )
@@ -2757,7 +2774,7 @@ class ClipParametersWindow(ResettableWindow):
                                         def update_color(sender, app_data, user_data):
                                             # Color picker returns values between 0 and 1. Convert
                                             # to 255 int value.
-                                            rgb = [
+                                            [
                                                 int(util.clamp(v * 255, 0, 255))
                                                 for v in app_data
                                             ]
@@ -2779,7 +2796,7 @@ class ClipParametersWindow(ResettableWindow):
                                             tag=f"{input_channel.id}.name_button",
                                             label=input_channel.name,
                                             callback=APP.action_callback,
-                                            user_data=SelectInputNode(
+                                            user_data=SelectInputChannel(
                                                 {"clip": clip, "channel": input_channel}
                                             ),
                                         )
@@ -2849,11 +2866,11 @@ class ClipParametersWindow(ResettableWindow):
                     ):
                         dpg.add_table_column(
                             label="Output",
-                            tag=f"clip_parameters.output.table.column.input",
+                            tag="clip_parameters.output.table.column.input",
                         )
                         dpg.add_table_column(
                             label="Value",
-                            tag=f"clip_parameters.output.table.column.type",
+                            tag="clip_parameters.output.table.column.type",
                         )
                         for output_index, output in enumerate(clip.outputs):
                             if output.deleted:

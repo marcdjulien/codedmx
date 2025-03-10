@@ -36,7 +36,6 @@ TODO:
 
 """
 import dearpygui.dearpygui as dpg
-import math
 import time
 import re
 from threading import RLock, Thread
@@ -72,10 +71,6 @@ VARIABLE_NAME_PATTERN = r"[a-zA-Z_][a-zA-Z\d_]*$"
 HUMAN_DELAY = 0.125
 
 DEFAULT_SEQUENCE_DURATION = 4  # beats
-
-
-def get_node_editor_tag(clip):
-    return f"{clip.id}.gui.node_window.node_editor"
 
 
 def get_output_configuration_window_tag(track):
@@ -249,18 +244,6 @@ class Application:
             # Number of global elements
             dpg.add_int_value(default_value=0, tag="n_global_storage_elements")
 
-            # Output Channel Variables
-            # Since these are shared between tracks, make them globally here.
-            for output_channel in self.get_all_valid_clip_output_channels():
-                tag = f"{output_channel.id}.value"
-                add_func = {
-                    "float": dpg.add_float_value,
-                    "int": dpg.add_int_value,
-                    "bool": dpg.add_int_value,
-                    "any": dpg.add_float_value,
-                }[output_channel.dtype]
-                add_func(tag=tag)
-
             # Code text
             def create_text(obj):
                 dpg.add_string_value(
@@ -268,12 +251,10 @@ class Application:
                     default_value=obj.code.read(),
                 )
 
+            # Text for Clips will be created on CreateNewClip
             create_text(self.state)
             for track in self.state.tracks:
                 create_text(track)
-                for clip in track.clips:
-                    if util.valid(clip):
-                        create_text(clip)
 
         # Create main viewport.
         logging.debug("Create viewport")
@@ -536,6 +517,8 @@ class Application:
             result = self.execute_wrapper(
                 f"duplicate_clip_preset {clip.id} {preset.id}"
             )
+            if not result.success:
+                self.state.log.append("Failed to duplicate clip")
 
         with dpg.menu(
             parent=preset_menu_tag,
@@ -915,14 +898,14 @@ class Application:
             height = 520
             with dpg.window(
                 tag=parent,
-                label=f"Automation Window",
+                label="Automation Window",
                 width=width,
                 height=height,
                 pos=(799, 18),
                 show=False,
                 no_move=True,
                 no_title_bar=True,
-            ) as window:
+            ):
                 default_color = input_channel.get()
                 node_theme = get_node_tag(input_channel) + ".theme"
                 with dpg.theme(tag=node_theme):
@@ -966,14 +949,14 @@ class Application:
             height = 520
             with dpg.window(
                 tag=parent,
-                label=f"Automation Window",
+                label="Automation Window",
                 width=width,
                 height=height,
                 pos=(799, 18),
                 show=False,
                 no_move=True,
                 no_title_bar=True,
-            ) as window:
+            ):
                 pass
 
     def add_automation_tab(self, input_channel, automation):
@@ -1007,7 +990,6 @@ class Application:
 
         window_tag = get_source_node_window_tag(input_channel)
         automation = input_channel.active_automation
-        series_tag = f"{input_channel.id}.series"
         plot_tag = get_plot_tag(input_channel)
         x_axis_limits_tag = f"{plot_tag}.x_axis_limits"
         y_axis_limits_tag = f"{plot_tag}.y_axis_limits"
@@ -1074,7 +1056,7 @@ class Application:
         try:
             pos = dpg.get_item_pos("reorder.gui.window")
             dpg.delete_item("reorder.gui.window")
-        except Exception as e:
+        except Exception:
             pos = (100, 100)
 
         def swap(container, i, j):
@@ -1103,8 +1085,8 @@ class Application:
             self.create_and_show_reorder_window(sender, app_data, user_data)
 
         with dpg.window(
-            label=f"Reorder", width=800, height=800, pos=pos, tag="reorder.gui.window"
-        ) as window:
+            label="Reorder", width=800, height=800, pos=pos, tag="reorder.gui.window"
+        ):
             with dpg.table(tag="", header_row=False):
                 dpg.add_table_column()
                 dpg.add_table_column()
@@ -1126,16 +1108,16 @@ class Application:
     def create_and_show_track_sequences_window(self):
         try:
             dpg.delete_item("sequences.gui.window")
-        except Exception as e:
+        except Exception:
             pass
 
         with dpg.window(
-            label=f"Sequences",
+            label="Sequences",
             width=800,
             height=800,
             pos=(100, 100),
             tag="sequences.gui.window",
-        ) as window:
+        ):
             with dpg.table(tag="sequences.table"):
                 for i, track in enumerate(self.state.tracks):
                     dpg.add_table_column(label=track.name)
@@ -1361,7 +1343,7 @@ class Application:
         #
         # dpg.bind_theme(global_theme)
 
-        with dpg.theme(tag="clip_text_theme") as button_theme:
+        with dpg.theme(tag="clip_text_theme"):
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(
                     dpg.mvThemeCol_Text,
@@ -1369,7 +1351,7 @@ class Application:
                     category=dpg.mvThemeCat_Core,
                 )
 
-        with dpg.theme(tag="red_button_theme") as button_theme:
+        with dpg.theme(tag="red_button_theme"):
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(
                     dpg.mvThemeCol_Button,
@@ -1549,18 +1531,7 @@ class Application:
     def copy_selected(self):
         new_copy_buffer = []
 
-        # Copying from Node Editor
-        if self._active_clip is not None:
-            node_editor_tag = get_node_editor_tag(self._active_clip)
-            for item in dpg.get_selected_nodes(node_editor_tag):
-                alias = dpg.get_item_alias(item)
-                item_id = alias.replace(".node", "").rsplit(".", 1)[-1]
-                obj = self.state.get_obj(item_id)
-                if isinstance(obj, (model.DmxOutputGroup, model.DmxOutput)):
-                    continue
-                new_copy_buffer.append(obj)
-
-        elif window_tag_alias == "clip.gui.window":
+        if window_tag_alias == "clip.gui.window":
             if self._active_clip is not None:
                 new_copy_buffer.append(self._active_clip)
 
@@ -1736,7 +1707,6 @@ class Application:
             and isinstance(c_active_input_channel, model.AutomatableSourceNode)
             and util.valid(c_active_input_channel.active_automation)
         ):
-            automation = c_active_input_channel.active_automation
             xs = np.arange(0, c_active_input_channel.active_automation.length, 0.01)
             ys = c_active_input_channel.active_automation.f(xs).astype(
                 float if c_active_input_channel.dtype == "float" else int
@@ -2065,7 +2035,7 @@ class Application:
     def create_standard_source_node(self, sender, app_data, user_data):
         action = user_data[0]
         args = user_data[1]
-        right_click_menu = user_data[2]
+        user_data[2]
         if action == "create":
             clip, dtype = args
             result = self.execute_wrapper(f"create_source {clip.id} {dtype}")
@@ -2208,13 +2178,13 @@ class Application:
         window_tag = get_properties_window_tag(obj)
         with dpg.window(
             tag=window_tag,
-            label=f"Properties",
+            label="Properties",
             width=500,
             pos=(gui.SCREEN_WIDTH / 3, gui.SCREEN_HEIGHT / 3),
             no_move=True,
             show=False,
             no_title_bar=True,
-        ) as window:
+        ):
             properties_table_tag = f"{window_tag}.properties_table"
             with dpg.table(
                 header_row=True,
@@ -2414,11 +2384,6 @@ class Application:
         def update_channel_group_name(sender, app_data, user_data):
             output_channel_group = user_data
             output_channel_group.update_name(app_data)
-            if util.valid(self._active_clip):
-                dpg.configure_item(
-                    get_node_tag(self._active_clip, output_channel_group),
-                    label=app_data,
-                )
 
         output_table_tag = f"{get_output_configuration_window_tag(track)}.output_table"
         output_table_row_tag = f"{output_table_tag}.{output_channel_group.id}.gui.row"
@@ -2693,7 +2658,7 @@ class Application:
         )
         if result.success:
             self.reset_automation_plot(input_channel)
-            gui.SelectInputNode(
+            gui.SelectInputChannel(
                 {"clip": self._active_clip, "channel": input_channel}
             ).execute()
 
@@ -2958,13 +2923,13 @@ class Application:
     def play_clip_callback(self, sender, app_data, user_data):
         track, clip = user_data
         if self.ctrl:
-            result = self.execute_wrapper(f"play_clip {track.id} {clip.id}")
+            self.execute_wrapper(f"play_clip {track.id} {clip.id}")
         else:
-            result = self.execute_wrapper(f"set_clip {track.id} {clip.id}")
+            self.execute_wrapper(f"set_clip {track.id} {clip.id}")
 
     def toggle_clip_play_callback(self, sender, app_data, user_data):
         track, clip = user_data
-        result = self.execute_wrapper(f"toggle_clip {track.id} {clip.id}")
+        self.execute_wrapper(f"toggle_clip {track.id} {clip.id}")
 
     def toggle_play_callback(self):
         self.state.toggle_play()
@@ -3190,21 +3155,7 @@ class Application:
             if self.ctrl:
                 self.paste_selected()
         elif key in ["R"]:
-            if self.ctrl:
-                if util.valid(self._active_clip):
-                    node_editor_tag = get_node_editor_tag(self._active_clip)
-                    items = dpg.get_selected_nodes(node_editor_tag)
-                    if items:
-                        item = items[0]
-                        alias = dpg.get_item_alias(item)
-                        node_id = alias.replace(".node", "").rsplit(".", 1)[-1]
-                        obj = self.state.get_obj(node_id)
-                        dpg.set_value("rename_node.text", obj.name)
-                    else:
-                        dpg.set_value("rename_node.text", self._active_clip.name)
-                    dpg.configure_item("rename_node.popup", show=True)
-                    dpg.focus_item("rename_node.text")
-            elif self.state.mode == "performance":
+            if self.state.mode == "performance":
                 self.reset_time_callback()
         elif key in ["N"]:
             if self.ctrl:
@@ -3247,7 +3198,7 @@ class Application:
         if not isinstance(app_data, int):
             return
         key_n = app_data
-        key = chr(key_n)
+        chr(key_n)
 
         if self.keyboard_mode:
             self.trigger_keys([key_n], pressed=False)
