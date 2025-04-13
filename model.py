@@ -2045,7 +2045,7 @@ class ProgramState(Identifier):
             clip_i = int(clip_i)
             track = self.get_obj(track_id)
             assert clip_i < len(track.clips)
-            track[clip_i] = Clip(f"Clip #{clip_i}", track.outputs)
+            track[clip_i] = Clip(f"Controller #{clip_i}", track.outputs)
             return Result(True, track[clip_i])
 
         elif cmd == "create_source":

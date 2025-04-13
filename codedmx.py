@@ -185,6 +185,10 @@ class Application:
         self.console_window = None
         self.remap_midi_device_window = None
         self.code_window = None
+        self.reorder_window = None
+        self.sequence_configuration_window = None
+        self.sequences_window = None
+        self.preset_configuration_window = None
 
         self.window_manager = gui.WindowManager(self)
 
@@ -249,6 +253,9 @@ class Application:
         self.manage_trigger_window = gui.ManageTriggerWindow(self.state)
         self.remap_midi_device_window = gui.RemapMidiDeviceWindow(self.state)
         self.reorder_window = gui.ReorderWindow(self.state)
+        self.sequence_configuration_window = gui.SequenceConfigurationWindow(self.state)
+        self.sequences_window = gui.SequencesWindow(self.state)
+        self.preset_configuration_window = gui.PresetConfigurationWindow(self.state)
 
         #### Help Window ####
         self.help_window = gui.HelpWindow(self.state)
@@ -498,7 +505,7 @@ class Application:
             dpg.add_menu_item(
                 tag=f"{preset_menu_bar}.edit",
                 label="Edit",
-                callback=self.create_and_show_save_presets_window,
+                callback=self.preset_configuration_window.configure_and_show,
                 user_data=(clip, preset),
             )
             dpg.add_menu_item(
@@ -1013,221 +1020,6 @@ class Application:
                 )
                 dpg.bind_item_theme(tag, "bg_line.theme")
 
-    def create_and_show_track_sequences_window(self):
-        try:
-            dpg.delete_item("sequences.gui.window")
-        except Exception:
-            pass
-
-        with dpg.window(
-            label="Sequences",
-            width=800,
-            height=800,
-            pos=(100, 100),
-            tag="sequences.gui.window",
-        ):
-            with dpg.table(tag="sequences.table"):
-                for i, track in enumerate(self.state.tracks):
-                    dpg.add_table_column(label=track.name)
-
-                with dpg.table_row():
-                    for track in self.state.tracks:
-                        with dpg.group():
-                            dpg.add_menu_item(
-                                label="New Sequence",
-                                callback=self.create_and_show_new_sequences_window,
-                                user_data=(track, None),
-                            )
-                            dpg.add_menu_item(
-                                label="Reorder",
-                                callback=self.reorder_window.configure_and_show,
-                                user_data=(
-                                    track.sequences,
-                                    get_sequences_group_tag(track),
-                                    get_sequence_button_tag,
-                                ),
-                            )
-
-                def start_sequence(sender, app_data, user_data):
-                    track, sequence = user_data
-                    track.sequence = sequence
-                    self.state.start()
-
-                with dpg.table_row():
-                    for track in self.state.tracks:
-                        with dpg.group(tag=get_sequences_group_tag(track)):
-                            for sequence in track.sequences:
-                                dpg.add_button(
-                                    tag=get_sequence_button_tag(sequence),
-                                    label=sequence.name,
-                                    callback=start_sequence,
-                                    user_data=(track, sequence),
-                                )
-                                with dpg.popup(dpg.last_item()):
-                                    dpg.add_menu_item(
-                                        label="Edit",
-                                        callback=self.create_and_show_new_sequences_window,
-                                        user_data=(track, sequence),
-                                    )
-
-    def create_and_show_new_sequences_window(self, sender, app_data, user_data):
-        track, sequence = user_data
-        editing = util.valid(sequence)
-
-        new_sequence_window = "new_sequence_window"
-        try:
-            dpg.delete_item(new_sequence_window)
-        except:
-            pass
-
-        def cancel(sender, app_data, user_data):
-            dpg.delete_item(new_sequence_window)
-
-        def save(sender, app_data, user_data):
-            sequence_info = []
-            for i in range(self._n_sequence_rows):
-                seq_info = self._new_sequence_buffer.get(i)
-                duration = self._new_sequence_duration.get(i)
-                if seq_info and duration:
-                    seq_info.append(duration)
-                    sequence_info.append(seq_info)
-                    self.state.log.append("Invalid sequence entry")
-
-            if sequence_info:
-                name = dpg.get_value("sequence.name")
-                data = json.dumps(
-                    {
-                        "sequence_info": sequence_info,
-                        "name": name,
-                        "track": track.id,
-                        "sequence_id": sequence.id if editing else None,
-                    }
-                )
-
-                result = self.execute_wrapper(f"add_sequence {data}")
-                if result.success:
-                    dpg.configure_item(item=new_sequence_window, show=False)
-                    self.create_and_show_track_sequences_window()
-                    dpg.configure_item(item="sequences.gui.window", show=True)
-                    dpg.focus_item("sequences.gui.window")
-                    self._new_sequence_buffer.clear()
-                    self._new_sequence_duration.clear()
-                    self._n_sequence_rows = 0
-                else:
-                    self.state.log.append("Failed to add sequence")
-
-        def preset_selected(sender, app_data, user_data):
-            i, title, clip, preset = user_data
-            self._new_sequence_buffer[int(i)] = [clip.id, preset.id]
-            dpg.configure_item(
-                item=f"{new_sequence_window}.menu_bar.{i}.title", label=title
-            )
-
-        def set_duration(sender, app_data, user_data):
-            duration = app_data
-            i = user_data
-            self._new_sequence_duration[int(i)] = duration
-            dpg.set_value(f"{new_sequence_window}.{i}.duration", duration)
-
-        self._n_sequence_rows = 0
-        with dpg.window(
-            label="New Sequence",
-            tag=new_sequence_window,
-            no_title_bar=True,
-            modal=True,
-            width=500,
-            height=500,
-            no_move=True,
-            pos=(500, 500),
-        ):
-
-            def add_rows(sender, app_data, callback):
-                final_n_rows = app_data
-
-                if self._n_sequence_rows < final_n_rows:
-                    for i in range(self._n_sequence_rows, final_n_rows):
-                        with dpg.table_row(
-                            parent=f"{new_sequence_window}.table",
-                            before=f"{new_sequence_window}.table.save_cancel_row",
-                        ):
-                            self._new_sequence_duration[
-                                int(i)
-                            ] = DEFAULT_SEQUENCE_DURATION
-
-                            with dpg.menu(
-                                tag=f"{new_sequence_window}.menu_bar.{i}.title",
-                                label="Select Clip Preset",
-                            ):
-                                for clip in track.clips:
-                                    if not util.valid(clip):
-                                        continue
-                                    for preset in clip.presets:
-                                        title = f"{clip.name}: {preset.name}"
-                                        dpg.add_menu_item(
-                                            label=title,
-                                            callback=preset_selected,
-                                            user_data=(i, title, clip, preset),
-                                        )
-
-                            dpg.add_input_int(
-                                tag=f"{new_sequence_window}.{i}.duration",
-                                default_value=DEFAULT_SEQUENCE_DURATION,
-                                callback=set_duration,
-                                user_data=i,
-                            )
-
-                        self._n_sequence_rows += 1
-
-            with dpg.table(
-                tag=f"{new_sequence_window}.table",
-                header_row=False,
-                policy=dpg.mvTable_SizingStretchProp,
-            ):
-                dpg.add_table_column(width=100)
-                dpg.add_table_column()
-                dpg.add_table_column()
-
-                with dpg.table_row():
-                    dpg.add_text(default_value="Sequence Name")
-                    dpg.add_input_text(
-                        tag="sequence.name",
-                        default_value=sequence.name if editing else "",
-                    )
-
-                with dpg.table_row():
-                    dpg.add_text(default_value="Num. Entries ")
-                    dpg.add_input_int(
-                        default_value=len(sequence.sequence_info) if editing else 1,
-                        callback=add_rows,
-                        on_enter=True,
-                    )
-
-                # Empty Row
-                with dpg.table_row():
-                    dpg.add_text()
-                    dpg.add_text()
-
-                with dpg.table_row():
-                    dpg.add_text(default_value="Clip Preset")
-                    dpg.add_text(default_value="Duration (Beats)")
-
-                if editing:
-                    add_rows(None, len(sequence.sequence_info), None)
-                    for i, si in enumerate(sequence.sequence_info):
-                        clip, preset, duration = si
-                        title = f"{clip.name}: {preset.name}"
-                        preset_selected(None, None, (i, title, clip, preset))
-                        set_duration(None, duration, i)
-                else:
-                    # Start with 1 row
-                    add_rows(None, 1, None)
-
-                with dpg.table_row(tag=f"{new_sequence_window}.table.save_cancel_row"):
-                    dpg.add_group()
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label="Save", callback=save)
-                        dpg.add_button(label="Cancel", callback=cancel)
-
     def create_themes(self):
         # Initialize global theme
         # with dpg.theme() as global_theme:
@@ -1736,181 +1528,6 @@ class Application:
     ### Create Functions ###
     ########################
 
-    # TODO: Turn into class
-    def create_and_show_save_presets_window(self, sender, app_data, user_data):
-        clip, preset = user_data
-
-        # If a valid preset was passed in, this means we're editing it.
-        # Otherwise, we're creating a new one.
-        editing = util.valid(preset)
-
-        preset_window_tag = "preset_window"
-        try:
-            dpg.delete_item(preset_window_tag)
-        except:
-            pass
-
-        def cancel(sender, app_data, user_data):
-            dpg.delete_item(preset_window_tag)
-
-        def save(sender, app_data, user_data):
-            # TODO: Anything that modifies the state should be wrapped with a lock
-            # OR, anything that modfies GUI items manipulated in main_loop need to be around a lock
-            with self.lock:
-                presets = []
-                for i, channel in enumerate(clip.inputs):
-                    include = dpg.get_value(f"preset.{i}.include")
-                    if include:
-                        presets.append(
-                            {
-                                "channel": channel.id,
-                                "automation": self._clip_preset_buffer[channel.id],
-                                "speed": None
-                                if channel.is_constant
-                                else dpg.get_value(f"preset.{i}.speed"),
-                            }
-                        )
-
-                if presets:
-                    data = {
-                        "clip": clip.id,
-                        "name": dpg.get_value("preset.name"),
-                        "preset_info": presets,
-                        "preset_id": preset.id if editing else None,
-                    }
-
-                    result = self.execute_wrapper(f"add_clip_preset {json.dumps(data)}")
-                    if result.success:
-                        if editing:
-                            dpg.configure_item(
-                                get_preset_menu_bar_tag(preset), label=preset.name
-                            )
-                        else:
-                            new_preset = result.payload
-                            self.create_preset_theme(new_preset)
-                            self.clip_preset_window.reset()
-
-                        self._clip_preset_buffer.clear()
-                        dpg.delete_item("preset_window")
-                    else:
-                        logger.warning("Failed to add clip preset")
-
-        def set_automation(sender, app_data, user_data):
-            channel, automation = user_data
-            self._clip_preset_buffer[channel.id] = automation.id
-            dpg.configure_item(f"{channel.id}.select_preset_bar", label=automation.name)
-
-        def set_value(sender, app_data, user_data):
-            channel = user_data
-            value = app_data
-            self._clip_preset_buffer[channel.id] = value
-
-        with dpg.window(
-            tag=preset_window_tag, modal=True, width=600, height=500, no_move=True
-        ):
-            with dpg.table(header_row=False, policy=dpg.mvTable_SizingStretchProp):
-                dpg.add_table_column()
-                dpg.add_table_column()
-                dpg.add_table_column()
-                dpg.add_table_column()
-
-                with dpg.table_row():
-                    dpg.add_text(default_value="Preset Name")
-                    dpg.add_input_text(
-                        tag="preset.name", default_value=preset.name if editing else ""
-                    )
-
-                with dpg.table_row():
-                    dpg.add_text(default_value="Channel")
-                    dpg.add_text(default_value="Preset/Value")
-                    dpg.add_text(default_value="Speed (2^n)")
-                    dpg.add_text(default_value="Include")
-
-                preset_data = {}
-
-                if editing:
-                    preset_data = {
-                        channel.id: (automation, speed)
-                        for channel, automation, speed in preset.presets
-                    }
-
-                for i, channel in enumerate(clip.inputs):
-                    with dpg.table_row():
-                        # Name column
-                        dpg.add_text(default_value=channel.name)
-
-                        # Preset/Value column
-                        if channel.is_constant:
-                            kwargs = {}
-                            if channel.dtype == "any":
-                                add_func = dpg.add_input_text
-                            elif channel.size == 1:
-                                add_func = (
-                                    dpg.add_input_float
-                                    if channel.dtype == "float"
-                                    else dpg.add_input_int
-                                )
-                            else:
-                                add_func = dpg.add_drag_floatx
-                                kwargs["size"] = channel.size
-                            add_func(
-                                width=90,
-                                default_value=channel.get(),
-                                callback=set_value,
-                                user_data=channel,
-                                **kwargs,
-                            )
-
-                        else:
-                            with dpg.menu(
-                                tag=f"{channel.id}.select_preset_bar",
-                                label="Select Preset",
-                            ):
-                                for automation in channel.automations:
-                                    dpg.add_menu_item(
-                                        label=automation.name,
-                                        callback=set_automation,
-                                        user_data=(channel, automation),
-                                    )
-
-                        if channel.id in preset_data:
-                            if channel.is_constant:
-                                set_value(None, preset_data[channel.id][0], channel)
-                            else:
-                                set_automation(
-                                    None, None, (channel, preset_data[channel.id][0])
-                                )
-                        else:
-                            if channel.is_constant:
-                                set_value(None, channel.get(), channel)
-                            elif util.valid(channel.active_automation):
-                                set_automation(
-                                    None, None, (channel, channel.active_automation)
-                                )
-
-                        # Speed column
-                        if channel.is_constant:
-                            dpg.add_text(label="")
-                        else:
-                            dpg.add_input_int(
-                                tag=f"preset.{i}.speed",
-                                default_value=preset_data[channel.id][1]
-                                if channel.id in preset_data
-                                else channel.speed,
-                            )
-
-                        # Include column
-                        dpg.add_checkbox(
-                            tag=f"preset.{i}.include",
-                            default_value=channel.id in preset_data,
-                        )
-
-                with dpg.table_row():
-                    dpg.add_group()
-                    with dpg.group(horizontal=True):
-                        dpg.add_button(label="Save", callback=save)
-                        dpg.add_button(label="Cancel", callback=cancel)
-
     def create_preset_theme(self, preset):
         preset_theme = get_channel_preset_theme(preset)
         text_color_theme_tag = f"{preset_theme}.text_color"
@@ -2195,12 +1812,12 @@ class Application:
 
                         delete_button = dpg.add_button(
                             label="Delete",
-                            callback=self.create_and_show_delete_obj_callback,
+                            callback=self.create_and_show_delete_obj_window,
                             user_data=obj,
                         )
                         dpg.bind_item_theme(delete_button, "red_button_theme")
 
-    def create_and_show_delete_obj_callback(self, sender, app_data, user_data):
+    def create_and_show_delete_obj_window(self, sender, app_data, user_data):
         obj = user_data
         with dpg.window(
             modal=True,
@@ -2464,7 +2081,8 @@ class Application:
 
                 dpg.add_menu_item(
                     label="Sequences",
-                    callback=self.create_and_show_track_sequences_window,
+                    callback=self.action_callback,
+                    user_data=gui.ShowWindow(self.sequences_window),
                 )
 
             #### Transport section ####
