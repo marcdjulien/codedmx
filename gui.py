@@ -36,6 +36,7 @@ VARIABLE_NAME_PATTERN = r"[a-zA-Z_][a-zA-Z\d_]*$"
 
 ICON = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
 
+PLAY_BUTTON_COLOR = [0, 255, 0, 60]
 
 def set_app(app):
     global APP
@@ -3027,6 +3028,10 @@ class SequenceConfigurationWindow(ResettableWindow):
         self.track = None
         self.sequence = None
 
+        self._new_sequence_buffer = {}
+        self._new_sequence_duration = {}
+        self._n_sequence_rows = 0
+
         super().__init__(
             state,
             tag="new_sequence_window",
@@ -3038,6 +3043,7 @@ class SequenceConfigurationWindow(ResettableWindow):
             height=500,
             pos=(2 * SCREEN_WIDTH / 6, SCREEN_HEIGHT / 3),
         )
+
 
     def configure_and_show(self, sender, app_data, user_data):
         self.track, self.sequence = user_data
@@ -3055,9 +3061,9 @@ class SequenceConfigurationWindow(ResettableWindow):
 
             def save(sender, app_data, user_data):
                 sequence_info = []
-                for i in range(APP._n_sequence_rows):
-                    seq_info = APP._new_sequence_buffer.get(i)
-                    duration = APP._new_sequence_duration.get(i)
+                for i in range(self._n_sequence_rows):
+                    seq_info = self._new_sequence_buffer.get(i)
+                    duration = self._new_sequence_duration.get(i)
                     if seq_info and duration:
                         seq_info.append(duration)
                         sequence_info.append(seq_info)
@@ -3070,15 +3076,15 @@ class SequenceConfigurationWindow(ResettableWindow):
                             "sequence_info": sequence_info,
                             "name": name,
                             "track": self.track.id,
-                            "sequence_id": sequence.id if editing else None,
+                            "sequence_id": self.sequence.id if editing else None,
                         }
                     )
 
                     result = APP.execute_wrapper(f"add_sequence {data}")
                     if result.success:
-                        APP._new_sequence_buffer.clear()
-                        APP._new_sequence_duration.clear()
-                        APP._n_sequence_rows = 0
+                        self._new_sequence_buffer.clear()
+                        self._new_sequence_duration.clear()
+                        self._n_sequence_rows = 0
                         self.hide()
                         APP.sequences_window.reset()
                     else:
@@ -3086,7 +3092,7 @@ class SequenceConfigurationWindow(ResettableWindow):
 
             def preset_selected(sender, app_data, user_data):
                 i, title, clip, preset = user_data
-                APP._new_sequence_buffer[int(i)] = [clip.id, preset.id]
+                self._new_sequence_buffer[int(i)] = [clip.id, preset.id]
                 dpg.configure_item(
                     item=f"{self.tag}.menu_bar.{i}.title", label=title
                 )
@@ -3094,21 +3100,21 @@ class SequenceConfigurationWindow(ResettableWindow):
             def set_duration(sender, app_data, user_data):
                 duration = app_data
                 i = user_data
-                APP._new_sequence_duration[int(i)] = duration
+                self._new_sequence_duration[int(i)] = duration
                 dpg.set_value(f"{self.tag}.{i}.duration", duration)
 
-            APP._n_sequence_rows = 0
+            self._n_sequence_rows = 0
 
             def add_rows(sender, app_data, callback):
                 final_n_rows = app_data
 
-                if APP._n_sequence_rows < final_n_rows:
-                    for i in range(APP._n_sequence_rows, final_n_rows):
+                if self._n_sequence_rows < final_n_rows:
+                    for i in range(self._n_sequence_rows, final_n_rows):
                         with dpg.table_row(
                             parent=f"{self.tag}.table",
                             before=f"{self.tag}.table.save_cancel_row",
                         ):
-                            APP._new_sequence_duration[
+                            self._new_sequence_duration[
                                 int(i)
                             ] = DEFAULT_SEQUENCE_DURATION
 
@@ -3134,7 +3140,7 @@ class SequenceConfigurationWindow(ResettableWindow):
                                 user_data=i,
                             )
 
-                        APP._n_sequence_rows += 1
+                        self._n_sequence_rows += 1
 
             with dpg.table(
                 tag=f"{self.tag}.table",
@@ -3192,6 +3198,8 @@ class PresetConfigurationWindow(ResettableWindow):
         self.clip = None
         self.preset = None
 
+        self._clip_preset_buffer = {}
+
         super().__init__(
             state,
             tag="preset_window",
@@ -3234,7 +3242,7 @@ class PresetConfigurationWindow(ResettableWindow):
                             presets.append(
                                 {
                                     "channel": channel.id,
-                                    "automation": APP._clip_preset_buffer[channel.id],
+                                    "automation": self._clip_preset_buffer[channel.id],
                                     "speed": None
                                     if channel.is_constant
                                     else dpg.get_value(f"preset.{i}.speed"),
@@ -3260,20 +3268,20 @@ class PresetConfigurationWindow(ResettableWindow):
                                 APP.create_preset_theme(new_preset)
                                 APP.clip_preset_window.reset()
 
-                            APP._clip_preset_buffer.clear()
+                            self._clip_preset_buffer.clear()
                             self.hide()
                         else:
                             logger.warning("Failed to add clip preset")
 
             def set_automation(sender, app_data, user_data):
                 channel, automation = user_data
-                APP._clip_preset_buffer[channel.id] = automation.id
+                self._clip_preset_buffer[channel.id] = automation.id
                 dpg.configure_item(f"{channel.id}.select_preset_bar", label=automation.name)
 
             def set_value(sender, app_data, user_data):
                 channel = user_data
                 value = app_data
-                APP._clip_preset_buffer[channel.id] = value
+                self._clip_preset_buffer[channel.id] = value
 
             with dpg.table(header_row=False, policy=dpg.mvTable_SizingStretchProp):
                 dpg.add_table_column()

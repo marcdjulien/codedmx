@@ -135,10 +135,6 @@ class Application:
         # Position of the mouse last time it was clicked.
         self.mouse_click_x, self.mouse_click_y = 0, 0
 
-        # Position of the mouse last time it was right clicked.
-        # TODO: Not used
-        self.mouse_clickr_x, self.mouse_clickr_y = 0, 0
-
         # Current code view mode.
         self.code_view = gui.GLOBAL_VIEW
 
@@ -151,13 +147,8 @@ class Application:
         self._active_input_channel = None
         self._active_presets = {}
 
-        # Keeps track of items when in an edit dialog.
         # TODO: These can be held in the respective Window's object.
         self._properties_buffer = defaultdict(dict)
-        self._clip_preset_buffer = {}
-        self._new_sequence_buffer = {}
-        self._new_sequence_duration = {}
-        self._n_sequence_rows = 0
 
         self._tap_tempo_buffer = [0, 0, 0, 0, 0]
         self._quantize_amount = None
@@ -169,8 +160,6 @@ class Application:
 
         self.lock = RLock()
         self.past_actions = []
-
-        self._play_button_color = [0, 255, 0, 60]
 
         # Windows
         self.clip_preset_window = None
@@ -1108,7 +1097,7 @@ class Application:
             with dpg.theme_component(dpg.mvAll):
                 dpg.add_theme_color(
                     dpg.mvThemeCol_Button,
-                    self._play_button_color,
+                    gui.PLAY_BUTTON_COLOR,
                     category=dpg.mvThemeCat_Core,
                     tag="transport.play_button.play.theme.color",
                 )
@@ -1358,14 +1347,14 @@ class Application:
             label="[Playing]" if self.state.playing else "[Paused]",
         )
         if self.state.playing:
-            g = 0.90 * self._play_button_color[1]
+            g = 0.90 * gui.PLAY_BUTTON_COLOR[1]
             g = max(10, int(g))
 
             if int(util.beats_to_16th(self.state.time_since_start_beat)) % 4 == 0:
                 g = 255
-            self._play_button_color[1] = g
+            gui.PLAY_BUTTON_COLOR[1] = g
             dpg.configure_item(
-                "transport.play_button.play.theme.color", value=self._play_button_color
+                "transport.play_button.play.theme.color", value=gui.PLAY_BUTTON_COLOR
             )
 
         # Cache the active clip, since it can change while this function is running
@@ -2564,8 +2553,6 @@ class Application:
         if app_data == 0:
             if self._active_clip is not None:
                 tag = get_node_window_tag(self._active_clip)
-        elif app_data == 1:
-            self.mouse_clickr_x, self.mouse_clickr_y = self.mouse_x, self.mouse_y
 
     def mouse_double_click_callback(self, sender, app_data, user_data):
         window_tag = dpg.get_item_alias(dpg.get_item_parent(dpg.get_active_window()))
