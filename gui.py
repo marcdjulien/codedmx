@@ -964,6 +964,74 @@ class RenameWindow(Window):
             )
 
 
+class ReorderWindow(ResettableWindow):
+    def __init__(self, state):
+        self.container = None
+        self.parent_tag = None
+        self.get_obj_tag_func = None
+
+        super().__init__(
+            state,
+            tag="reorder.gui.window",
+            label="Reorder",
+            pos=(2 * SCREEN_WIDTH / 5, SCREEN_HEIGHT / 3),
+            no_move=True,
+            autosize=True,
+        )
+
+    def configure_and_show(self, sender, app_data, user_data):
+        self.container, self.parent_tag, self.get_obj_tag_func = user_data
+        self.reset()
+        self.show()
+
+    def create(self):
+        def swap(container, i, j):
+            pass
+
+        def move(sender2, app_data2, user_data2):
+            current_i, new_i = user_data2
+
+            if new_i < 0 or new_i >= len(self.container):
+                return
+
+            i1 = min(current_i, new_i)
+            i2 = max(current_i, new_i)
+
+            obj1 = self.container[i1]
+            obj2 = self.container[i2]
+            self.container[i1] = obj2
+            self.container[i2] = obj1
+
+            dpg.move_item(
+                self.get_obj_tag_func(self.container[i1]),
+                parent=self.parent_tag,
+                before=self.get_obj_tag_func(self.container[i2]),
+            )
+
+            self.reset()
+
+        with self.window:
+            if self.container is None:
+                return
+
+            with dpg.table(tag="", header_row=False):
+                dpg.add_table_column()
+                dpg.add_table_column()
+                for i, obj in enumerate(self.container):
+                    with dpg.table_row():
+                        dpg.add_text(default_value=obj.name)
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(
+                                label=" - ",
+                                callback=move,
+                                user_data=(i, i - 1),
+                            )
+                            dpg.add_button(
+                                label=" + ",
+                                callback=move,
+                                user_data=(i, i + 1),
+                            )
+
 class InspectorWindow(Window):
     def __init__(self, state):
         self.x_values = list(range(500))
@@ -2303,7 +2371,7 @@ class AutomationWindow(Window):
                     )
                     dpg.add_menu_item(
                         label="Reorder",
-                        callback=self.create_and_show_reorder_window,
+                        callback=APP.reorder_window.configure_and_show,
                         user_data=(
                             input_channel.automations,
                             preset_menu_tag,
@@ -2627,7 +2695,7 @@ class ClipParametersWindow(ResettableWindow):
                     )
                     dpg.add_menu_item(
                         label="Reorder",
-                        callback=APP.create_and_show_reorder_window,
+                        callback=APP.reorder_window.configure_and_show,
                         user_data=(
                             clip.presets,
                             preset_menu_tag,

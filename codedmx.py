@@ -1,40 +1,3 @@
-"""
-TODO:
-    * [X] Code editing/Saving
-    * [x] Performance Layout
-    * Clean up transcendent project
-    * Multi clip preset (editing, reorder, colors)
-    * Better simulator
-    * Test creating project from scratch
-
-    For public release:
-    * > Implement robust copy/paste/duplicate (clips, automation curves, input channels, )
-    * Clean up private vars
-    * self.app.state in GUI classes instead of self.state
-    * warnings when in performance mode and making changes
-    * Compile into binary (pyinstaller --hidden-import scipy.interpolate --hidden-import mido.backends.rtmidi --onefile nodedmx.py)
-
-    * Make APP not global
-    * ? MIDI scaling (Test)
-    * ? Delete unused code
-    * X Finish Clip Parameteres Window (implement Edit button and input right click menu)
-    * X Global code in transcedent project should scale inputs into a new variable that's used globally (Fixed by MIDI scaling)
-    * X Play each global track once on init
-    * All logs to all appear in console
-    * Combine state logger with python logger
-
-    * Preview outputs
-    * Convert remaining windows to objects
-    * Sequence editing, deleting, reordering
-    * Preset editing
-    * README
-    * Install instructions
-    * Documentation
-    * Create new track and scene feature
-    * OSC remote control of clips/preeets
-    * Fix code view at init
-
-"""
 import dearpygui.dearpygui as dpg
 import time
 import re
@@ -136,7 +99,6 @@ class Application:
         self.state = model.ProgramState()
 
         # State of GUI elements.
-        # TODO: Simplify I/O
         self.gui_state = {
             # I/O type
             "io_types": {
@@ -154,6 +116,7 @@ class Application:
             "clip_preset_themes": {},
         }
 
+        # Special DPG tags to keep track of.
         self.tags = {
             # Drag Point tags for the currently selected automation window
             "point_tags": [],
@@ -173,13 +136,11 @@ class Application:
         self.mouse_click_x, self.mouse_click_y = 0, 0
 
         # Position of the mouse last time it was right clicked.
+        # TODO: Not used
         self.mouse_clickr_x, self.mouse_clickr_y = 0, 0
 
         # Current code view mode.
         self.code_view = gui.GLOBAL_VIEW
-
-        # Whether the node editor window is in focus.
-        self.node_editor_window_is_focused = False
 
         # Whether keyboard mode is enabled.
         self.keyboard_mode = False
@@ -187,10 +148,11 @@ class Application:
         self._active_track = None
         self._active_clip = None
         self._active_clip_slot = None
-        self._active_output_channel = None
         self._active_input_channel = None
         self._active_presets = {}
 
+        # Keeps track of items when in an edit dialog.
+        # TODO: These can be held in the respective Window's object.
         self._properties_buffer = defaultdict(dict)
         self._clip_preset_buffer = {}
         self._new_sequence_buffer = {}
@@ -286,6 +248,7 @@ class Application:
         self.add_new_trigger_window = gui.AddNewTriggerWindow(self.state)
         self.manage_trigger_window = gui.ManageTriggerWindow(self.state)
         self.remap_midi_device_window = gui.RemapMidiDeviceWindow(self.state)
+        self.reorder_window = gui.ReorderWindow(self.state)
 
         #### Help Window ####
         self.help_window = gui.HelpWindow(self.state)
@@ -608,7 +571,7 @@ class Application:
                     )
                     dpg.add_menu_item(
                         label="Reorder",
-                        callback=self.create_and_show_reorder_window,
+                        callback=self.reorder_window.configure_and_show,
                         user_data=(
                             input_channel.automations,
                             preset_menu_tag,
@@ -1050,61 +1013,6 @@ class Application:
                 )
                 dpg.bind_item_theme(tag, "bg_line.theme")
 
-    def create_and_show_reorder_window(self, sender, app_data, user_data):
-        container, parent_tag, get_obj_tag_func = user_data
-
-        try:
-            pos = dpg.get_item_pos("reorder.gui.window")
-            dpg.delete_item("reorder.gui.window")
-        except Exception:
-            pos = (100, 100)
-
-        def swap(container, i, j):
-            pass
-
-        def move(sender2, app_data2, user_data2):
-            container, current_i, new_i = user_data2
-
-            if new_i < 0 or new_i >= len(container):
-                return
-
-            i1 = min(current_i, new_i)
-            i2 = max(current_i, new_i)
-
-            obj1 = container[i1]
-            obj2 = container[i2]
-            container[i1] = obj2
-            container[i2] = obj1
-
-            dpg.move_item(
-                get_obj_tag_func(container[i1]),
-                parent=parent_tag,
-                before=get_obj_tag_func(container[i2]),
-            )
-
-            self.create_and_show_reorder_window(sender, app_data, user_data)
-
-        with dpg.window(
-            label="Reorder", width=800, height=800, pos=pos, tag="reorder.gui.window"
-        ):
-            with dpg.table(tag="", header_row=False):
-                dpg.add_table_column()
-                dpg.add_table_column()
-                for i, obj in enumerate(container):
-                    with dpg.table_row():
-                        dpg.add_text(default_value=obj.name)
-                        with dpg.group(horizontal=True):
-                            dpg.add_button(
-                                label=" - ",
-                                callback=move,
-                                user_data=(container, i, i - 1),
-                            )
-                            dpg.add_button(
-                                label=" + ",
-                                callback=move,
-                                user_data=(container, i, i + 1),
-                            )
-
     def create_and_show_track_sequences_window(self):
         try:
             dpg.delete_item("sequences.gui.window")
@@ -1132,7 +1040,7 @@ class Application:
                             )
                             dpg.add_menu_item(
                                 label="Reorder",
-                                callback=self.create_and_show_reorder_window,
+                                callback=self.reorder_window.configure_and_show,
                                 user_data=(
                                     track.sequences,
                                     get_sequences_group_tag(track),
@@ -1716,10 +1624,6 @@ class Application:
                 x=xs,
                 y=ys,
             )
-
-        # Update Inspector
-        if util.valid(self._active_output_channel):
-            self.inspector_window.update()
 
         # Update GlobalStorageDebugWindow
         if len(model.GlobalStorage.items()) != dpg.get_value(
@@ -3042,12 +2946,8 @@ class Application:
         if app_data == 0:
             if self._active_clip is not None:
                 tag = get_node_window_tag(self._active_clip)
-                self.node_editor_window_is_focused = self.mouse_inside_window(tag)
         elif app_data == 1:
             self.mouse_clickr_x, self.mouse_clickr_y = self.mouse_x, self.mouse_y
-
-            # Right clicking things should disable focus
-            self.node_editor_window_is_focused = False
 
     def mouse_double_click_callback(self, sender, app_data, user_data):
         window_tag = dpg.get_item_alias(dpg.get_item_parent(dpg.get_active_window()))
@@ -3115,8 +3015,6 @@ class Application:
 
         if key == " " and self.shift:
             self.toggle_play_callback()
-        elif key_n in [8, 46] and self.node_editor_window_is_focused and self.ctrl:
-            self.delete_selected_nodes_callback(None, None, self._active_clip)
         elif key_n in [120]:
             if self._active_input_channel is not None:
                 self.enable_recording_mode_callback(
