@@ -29,7 +29,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PROJECT_EXTENSION = "ndmx"
-NODE_EXTENSION = "ndmxc"
 VARIABLE_NAME_PATTERN = r"[a-zA-Z_][a-zA-Z\d_]*$"
 HUMAN_DELAY = 0.125
 
@@ -300,20 +299,21 @@ class Application:
 
         # Automation Windows
         logging.debug("Creating Automation Windows")
+
         for track in self.state.tracks:
             for clip in track.clips:
                 if not util.valid(clip):
                     continue
-                for input_channel in clip.inputs:
-                    self.add_input_channel_callback(
-                        sender=None,
-                        app_data=None,
-                        user_data=(
-                            "restore",
-                            (clip, input_channel),
-                            True,
-                        ),
-                    )
+                # Moved this to CreateNewClip
+                #for input_channel in clip.inputs:
+                #    self.add_input_channel_callback(
+                #        sender=None,
+                #        app_data=None,
+                #        user_data=(
+                #            "restore",
+                #            (clip, input_channel),
+                #        ),
+                #    )
 
         logging.debug("Initializing window settings")
         dpg.set_viewport_resize_callback(
@@ -954,11 +954,17 @@ class Application:
         y_axis_limits_tag = f"{plot_tag}.y_axis_limits"
 
         dpg.configure_item(plot_tag, label=input_channel.active_automation.name)
+
         dpg.set_axis_limits(
             x_axis_limits_tag,
             -gui.AXIS_MARGIN,
             input_channel.active_automation.length + gui.AXIS_MARGIN,
         )
+
+        min_value = input_channel.get_parameter("min").value
+        max_value = input_channel.get_parameter("max").value
+        y_axis_limits_tag = f"{plot_tag}.y_axis_limits"
+        dpg.set_axis_limits(y_axis_limits_tag, min_value, max_value)
 
         dpg.set_value(f"{window_tag}.beats", value=automation.length)
         dpg.set_value(f"{window_tag}.preset_name", value=automation.name)
@@ -1242,7 +1248,6 @@ class Application:
                             user_data=(
                                 "restore",
                                 (self._active_clip, new_input_channel),
-                                True,
                             ),
                         )
                     else:
@@ -1270,12 +1275,6 @@ class Application:
             self.action(gui.CreateNewClip({"track_i": track_i, "clip_i": clip_i}))
         else:
             raise RuntimeError(f"Failed to duplicate clip {clip_id}")
-
-        for i, old_channel in enumerate(clip.inputs):
-            self.copy_node_position(clip, old_channel, new_clip, new_clip.inputs[i])
-
-        for i, old_channel in enumerate(clip.outputs):
-            self.copy_node_position(clip, old_channel, new_clip, new_clip.outputs[i])
 
         self.save_last_active_clip()
         self._active_track = self.state.tracks[track_i]
@@ -1545,7 +1544,6 @@ class Application:
     def create_standard_source_node(self, sender, app_data, user_data):
         action = user_data[0]
         args = user_data[1]
-        user_data[2]
         if action == "create":
             clip, dtype = args
             result = self.execute_wrapper(f"create_source {clip.id} {dtype}")
@@ -1623,6 +1621,7 @@ class Application:
                     )
 
     def create_input_channel_menu(self, parent, clip):
+        # TODO: Remove right_click_menu
         right_click_menu = "popup_menu" in dpg.get_item_alias(parent)
 
         with dpg.menu(parent=parent, label="Sources"):

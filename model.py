@@ -315,7 +315,10 @@ class SourceNode(Parameterized):
 
     @property
     def value(self):
-        return self.channel.value
+        if isinstance(self.channel.value, list):
+            return tuple(self.channel.value)
+        else:
+            return self.channel.value
 
     @property
     def size(self):
@@ -325,7 +328,10 @@ class SourceNode(Parameterized):
         self.channel.set(value)
 
     def get(self):
-        return self.channel.get()
+        if isinstance(self.value, list):
+            return tuple(self.channel.get())
+        else:
+            return self.channel.get()
 
     def serialize(self):
         data = super().serialize()
@@ -2045,7 +2051,7 @@ class ProgramState(Identifier):
             clip_i = int(clip_i)
             track = self.get_obj(track_id)
             assert clip_i < len(track.clips)
-            track[clip_i] = Clip(f"Controller #{clip_i}", track.outputs)
+            track[clip_i] = Clip(f"Controller #{clip_i}", track.outputs, global_clip=track.global_track)
             return Result(True, track[clip_i])
 
         elif cmd == "create_source":

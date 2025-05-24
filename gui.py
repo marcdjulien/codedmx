@@ -432,15 +432,27 @@ class CreateNewClip(GuiAction):
             result = self.app.execute_wrapper(f"new_clip {track.id},{clip_i}")
             if not result.success:
                 raise RuntimeError("Failed to create clip")
+        # else restoring
 
         clip = track.clips[clip_i]
+
+        # Create inputs
+        for input_channel in clip.inputs:
+            APP.add_input_channel_callback(
+                sender=None,
+                app_data=None,
+                user_data=(
+                    "restore",
+                    (clip, input_channel),
+                ),
+            )
 
         with dpg.value_registry():
             dpg.add_string_value(
                 tag=get_code_window_tag(clip) + ".text", default_value=clip.code.read()
             )
 
-        # TODO: Can probably simplify this by making Clipindow resettable
+        # TODO: Can probably simplify this by making ClipWindow resettable
         # Gui Updates
         # Delete the double_click handler to create clips
         dpg.delete_item(
@@ -578,7 +590,8 @@ class PasteClip(GuiAction):
     def execute(self):
         track_i = self.params["track_i"]
         clip_i = self.params["clip_i"]
-        APP.paste_clip(track_i, clip_i)
+        with APP.lock:
+            APP.paste_clip(track_i, clip_i)
 
 
 class ShowTrackProperties(GuiAction):
@@ -1369,36 +1382,6 @@ class IOWindow(Window):
                         )
 
                         dpg.add_table_cell()
-
-
-class GlobalStorageDebugWindow(ResettableWindow):
-    def __init__(self, state):
-        super().__init__(
-            state,
-            pos=(200, 100),
-            width=800,
-            height=800,
-            label="Global Storage Debug",
-            tag="global_storage_debug.gui.window",
-            show=False,
-        )
-
-    def create(self):
-        with self.window:
-            with dpg.table(
-                header_row=True,
-                policy=dpg.mvTable_SizingStretchProp,
-            ):
-                dpg.add_table_column(label="Variable")
-                dpg.add_table_column(label="Value")
-                for i, (name, value) in enumerate(model.GlobalStorage.items()):
-                    with dpg.table_row():
-                        dpg.add_text(name)
-                        dpg.add_text(value, tag=f"{self.tag}.{i}")
-
-                dpg.set_value(
-                    "n_global_storage_elements", len(model.GlobalStorage.items())
-                )
 
 
 class HelpWindow(ResettableWindow):
@@ -2272,8 +2255,9 @@ class CodeWindow(ResettableWindow):
                 self.reset()
 
             def show_clip(sender, app_data, user_data):
-                APP.code_view = CLIP_VIEW
-                self.reset()
+                if APP._active_clip is not None:
+                    APP.code_view = CLIP_VIEW
+                    self.reset()
 
             with dpg.group(horizontal=True, height=20):
                 dpg.add_button(label="Save", callback=APP.save_menu_callback)
@@ -2288,7 +2272,7 @@ class CodeWindow(ResettableWindow):
                     callback=show_global,
                 )
                 dpg.add_button(
-                    tag=self.tag + ".button.clip", label="Clip", callback=show_clip
+                    tag=self.tag + ".button.clip", label="Clip", callback=show_clip, enabled=APP._active_clip != None
                 )
                 dpg.add_button(
                     tag=self.tag + ".button.track", label="Track", callback=show_track
