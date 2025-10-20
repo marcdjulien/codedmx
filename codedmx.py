@@ -98,6 +98,7 @@ class Application:
         self.state = model.ProgramState()
 
         # State of GUI elements.
+        # TODO: Move to IOWindow
         self.gui_state = {
             # I/O type
             "io_types": {
@@ -135,7 +136,7 @@ class Application:
         self.mouse_click_x, self.mouse_click_y = 0, 0
 
         # Current code view mode.
-        self.code_view = gui.GLOBAL_VIEW
+        self.code_view = gui.CLIP_INIT_CODE_VIEW
 
         # Whether keyboard mode is enabled.
         self.keyboard_mode = False
@@ -177,6 +178,7 @@ class Application:
         self.sequence_configuration_window = None
         self.sequences_window = None
         self.preset_configuration_window = None
+        self.python_modules_window = None
 
         self.window_manager = gui.WindowManager(self)
 
@@ -197,18 +199,6 @@ class Application:
             dpg.add_string_value(default_value="", tag="last_midi_message")
             # Number of global elements
             dpg.add_int_value(default_value=0, tag="n_global_storage_elements")
-
-            # Code text
-            def create_text(obj):
-                dpg.add_string_value(
-                    tag=get_code_window_tag(obj) + ".text",
-                    default_value=obj.code.read(),
-                )
-
-            # Text for Clips will be created on CreateNewClip
-            create_text(self.state)
-            for track in self.state.tracks:
-                create_text(track)
 
         # Create main viewport.
         logging.debug("Create viewport")
@@ -281,6 +271,9 @@ class Application:
         logging.debug("Creating i/o window")
         self.io_window = gui.IOWindow(self.state)
 
+        logging.debug("Creating python modules window")
+        self.python_modules_window = gui.PythonModulesWindow(self.state)
+        
         logging.debug("Creating rename window")
         self.rename_window = gui.RenameWindow(self.state)
 
@@ -314,6 +307,7 @@ class Application:
                 #            (clip, input_channel),
                 #        ),
                 #    )
+
 
         logging.debug("Initializing window settings")
         dpg.set_viewport_resize_callback(
@@ -466,7 +460,7 @@ class Application:
                 color = [int(255 * v) for v in app_data]
             dpg.configure_item(f"{preset_theme}.text_color", value=color)
             dpg.configure_item(f"{preset_theme}.button_bg_color", value=color)
-            self.gui_state[f"{preset_theme}.text_color"] = color
+            self.gui_state["clip_preset_themes"][f"{preset_theme}.text_color"] = color
             self.gui_state["clip_preset_themes"][
                 f"{preset_theme}.button_bg_color"
             ] = color
@@ -1223,16 +1217,6 @@ class Application:
             ("create", track, starting_address, fixture.name, fixture.channels),
         )
 
-    def copy_selected(self):
-        new_copy_buffer = []
-
-        if window_tag_alias == "clip.gui.window":
-            if self._active_clip is not None:
-                new_copy_buffer.append(self._active_clip)
-
-        if new_copy_buffer:
-            self.copy_buffer = new_copy_buffer
-
     def paste_selected(self):
         if self._active_clip is not None:
             for obj in self.copy_buffer:
@@ -1670,7 +1654,6 @@ class Application:
         with dpg.menu(parent=parent, label="Edit"):
             dpg.add_menu_item(
                 label="Copy",
-                callback=self.copy_selected,
             )
 
             def paste():
@@ -1682,7 +1665,7 @@ class Application:
                 callback=paste,
             )
 
-    # TODOL: Turn into class, ResettableWindow
+    # TODOL: Turn into ResettableWindow
     def create_properties_window(self, obj):
         window_tag = get_properties_window_tag(obj)
         with dpg.window(
@@ -1864,11 +1847,16 @@ class Application:
                 user_data=(track, output_channel),
             )
 
-        # Add a Node to each clip's node editor
-        for clip in track.clips:
-            if clip is None:
-                continue
-            self.create_output_node(clip, output_channel)
+        # TODO: Consolidate with code that creates this during init
+        with dpg.value_registry():
+            tag = f"{output_channel.id}.value"
+            add_func = {
+                "float": dpg.add_float_value,
+                "int": dpg.add_int_value,
+                "bool": dpg.add_int_value,
+                "any": dpg.add_float_value,
+            }[output_channel.dtype]
+            add_func(tag=tag)
 
     def create_track_output_group(self, sender, app_data, user_data):
         action = user_data[0]
@@ -2032,6 +2020,11 @@ class Application:
                     label="Triggers",
                     callback=self.action_callback,
                     user_data=gui.ShowWindow(self.manage_trigger_window),
+                )
+                dpg.add_menu_item(
+                    label="Python Modules",
+                    callback=self.action_callback,
+                    user_data=gui.ShowWindow(self.python_modules_window),
                 )
 
             #### View menu ####
@@ -2611,8 +2604,8 @@ class Application:
         key_n = app_data
         key = chr(key_n)
 
-        if key_n in [18]:
-            self.keyboard_mode_change_callback(None, None, None)
+        #if key_n in [18]:
+        #    self.keyboard_mode_change_callback(None, None, None)
 
         if self.keyboard_mode:
             return
@@ -2628,7 +2621,7 @@ class Application:
             pass
         elif key in ["C"]:
             if self.ctrl:
-                self.copy_selected()
+                pass
         elif key in ["O"]:
             if self.ctrl:
                 self.open_menu_callback()
@@ -2794,6 +2787,7 @@ class Application:
         return x2, y2
 
     def save(self):
+        self.state.log.append("Saving project.")
         self.save_code()
 
         # Deprecated
@@ -2816,15 +2810,12 @@ class Application:
             os.mkdir(self.state.project_folder_path)
             os.mkdir(os.path.join(self.state.project_folder_path, "code"))
 
-        self.state.code.save(dpg.get_value(get_code_window_tag(self.state) + ".text"))
-        self.state.code.reload()
         for track in self.state.tracks:
-            track.code.save(dpg.get_value(get_code_window_tag(track) + ".text"))
-            track.code.reload()
             for clip in track.clips:
                 if util.valid(clip):
-                    clip.code.save(dpg.get_value(get_code_window_tag(clip) + ".text"))
-                    clip.code.reload()
+                    clip.init_code.save(dpg.get_value(get_code_window_tag(clip) + ".init.text"))
+                    clip.main_code.save(dpg.get_value(get_code_window_tag(clip) + ".main.text"))
+                    clip.reload_code()
 
     def restore_gui_state(self):
         for inout in ["inputs", "outputs"]:

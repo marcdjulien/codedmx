@@ -7,7 +7,7 @@ import mido
 import re
 import json
 import socket
-
+import clipboard
 import model
 import util
 import functions
@@ -27,9 +27,8 @@ PROJECT_EXTENSION = "ndmx"
 NODE_EXTENSION = "ndmxc"
 HUMAN_DELAY = 0.125
 
-CLIP_VIEW = 0
-TRACK_VIEW = 1
-GLOBAL_VIEW = 2
+CLIP_INIT_CODE_VIEW = 0
+CLIP_MAIN_CODE_VIEW = 1
 
 DEFAULT_SEQUENCE_DURATION = 4  # beats
 VARIABLE_NAME_PATTERN = r"[a-zA-Z_][a-zA-Z\d_]*$"
@@ -189,11 +188,15 @@ class WindowManager:
             dpg.set_item_pos(window_tag, window_info["code_pos"])
             dpg.set_item_width(window_tag, window_info["code_size"][0])
             dpg.set_item_height(window_tag, window_info["code_size"][1])
-            dpg.set_item_width(window_tag + ".text", window_info["code_size"][0] * 0.98)
-            dpg.set_item_height(
-                window_tag + ".text", window_info["code_size"][1] * 0.91
-            )
             dpg.configure_item(window_tag, show=True)
+            #if APP._active_clip:
+            #    text_tag = get_code_window_tag(APP._active_clip) + (
+            #        ".main" if APP.code_view == CLIP_MAIN_CODE_VIEW else ".init"
+            #    ) + ".text"
+            #    dpg.set_item_width(text_tag, window_info["code_size"][0] * 0.98)
+            #    dpg.set_item_height(
+            #        text_tag, window_info["code_size"][1] * 0.91
+            #    )
 
             # Resize automation window
             for input_channel in self.app.get_all_valid_clip_input_channels():
@@ -449,7 +452,12 @@ class CreateNewClip(GuiAction):
 
         with dpg.value_registry():
             dpg.add_string_value(
-                tag=get_code_window_tag(clip) + ".text", default_value=clip.code.read()
+                tag=get_code_window_tag(clip) + ".main.text",
+                default_value=clip.main_code.read(),
+            )
+            dpg.add_string_value(
+                tag=get_code_window_tag(clip) + ".init.text",
+                default_value=clip.init_code.read(),
             )
 
         # TODO: Can probably simplify this by making ClipWindow resettable
@@ -489,6 +497,10 @@ class CreateNewClip(GuiAction):
         def copy_clip_callback(sender, app_data, user_data):
             self.app.copy_buffer = [user_data]
 
+        # TODO
+        def copy_clip_presets_callback(sender, app_data, user_data):
+            pass
+
         for tag in [text_tag, text_tag + ".filler"]:
             with dpg.popup(tag, mousebutton=1):
 
@@ -500,6 +512,9 @@ class CreateNewClip(GuiAction):
 
                 dpg.add_menu_item(
                     label="Copy", callback=copy_clip_callback, user_data=clip
+                )
+                dpg.add_menu_item(
+                    label="Copy Presets", callback=copy_clip_presets_callback, user_data=clip
                 )
                 dpg.add_menu_item(
                     label="Paste",
@@ -518,7 +533,7 @@ class CreateNewClip(GuiAction):
         self.create_clip_properties_window(clip)
 
         # Add the associated code editor
-        self.app.code_view = CLIP_VIEW
+        self.app.code_view = CLIP_INIT_CODE_VIEW
         self.app.code_window.reset()
         self.app.clip_params_window.reset()
 
@@ -738,7 +753,9 @@ def create_passive_button(
 
 
 class Window:
-    def __init__(self, state, *args, **kwargs):
+    state: model.ProgramState
+
+    def __init__(self, state: model.ProgramState, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
         self.state = state
@@ -1455,9 +1472,9 @@ class HelpWindow(ResettableWindow):
                     text += textwrap.dedent(
                         """
                     The following functions are available for all Input Channels:
-                    - Output.set(value)                ->  Sets the current value
-                    - Output.channel.value = value     ->  Sets the current value
-                    - Output['channel'].value = value  ->  Sets the current value
+                    - Output.set(value)                 ->  Sets the current value (individual DMX outputs)
+                    - Fixture.<channel>.value = value   ->  Sets the current value (fixtures)
+                    - Fixture['channel'].value = value  ->  Sets the current value (fixtures)
                     """
                     )
                     add_text(text)
@@ -2010,6 +2027,8 @@ class ClipAutomationPresetWindow(ResettableWindow):
                                     user_data=channel,
                                 )
                             for automation in channel.automations:
+                                if not util.valid(automation):
+                                    continue
                                 dpg.add_button(
                                     tag=get_automation_button_tag(automation),
                                     label=automation.name,
@@ -2224,39 +2243,23 @@ class CodeWindow(ResettableWindow):
     def create(self):
         track = APP._active_track
         clip = APP._active_clip
-        obj = None
-        if APP.code_view == GLOBAL_VIEW:
-            obj = APP.state
-        elif APP.code_view == TRACK_VIEW:
-            obj = track
-        else:
-            obj = clip
-
-        if obj is None:
-            return
 
         with self.window:
-            dpg.configure_item(
-                self.tag, label=f"Code > {getattr(obj, 'name', 'Global')}"
-            )
+            if clip is None:
+                label = "Code"
+            else:
+                label = f"Code |  {track.name}/{clip.name}"
 
-            def save():
-                APP.save_menu_callback()
-                clip.code.reload()
-                track.code.reload()
-                self.state.code.reload()
+            dpg.configure_item(self.tag, label=label)
 
-            def show_global(sender, app_data, user_data):
-                APP.code_view = GLOBAL_VIEW
-                self.reset()
+            def show_init(sender, app_data, user_data):
+                if clip is not None:
+                    APP.code_view = CLIP_INIT_CODE_VIEW
+                    self.reset()
 
-            def show_track(sender, app_data, user_data):
-                APP.code_view = TRACK_VIEW
-                self.reset()
-
-            def show_clip(sender, app_data, user_data):
-                if APP._active_clip is not None:
-                    APP.code_view = CLIP_VIEW
+            def show_main(sender, app_data, user_data):
+                if clip is not None:
+                    APP.code_view = CLIP_MAIN_CODE_VIEW
                     self.reset()
 
             with dpg.group(horizontal=True, height=20):
@@ -2267,42 +2270,44 @@ class CodeWindow(ResettableWindow):
                 )
                 dpg.add_button(label="|", tag=self.tag + ".button.separator")
                 dpg.add_button(
-                    tag=self.tag + ".button.global",
-                    label="Global",
-                    callback=show_global,
+                    tag=self.tag + ".button.clip_init",
+                    label="Init",
+                    callback=show_init,
+                    enabled=APP._active_clip != None,
                 )
                 dpg.add_button(
-                    tag=self.tag + ".button.clip", label="Clip", callback=show_clip, enabled=APP._active_clip != None
-                )
-                dpg.add_button(
-                    tag=self.tag + ".button.track", label="Track", callback=show_track
+                    tag=self.tag + ".button.clip_main", label="Main", 
+                    callback=show_main, 
+                    enabled=APP._active_clip != None,
                 )
 
-            # TODO: Should create this in the value_registry
-            dpg.add_input_text(
-                tag=self.tag + ".text",
-                source=get_code_window_tag(obj) + ".text",
-                multiline=True,
-                readonly=False,
-                tab_input=True,
-                width=APP.window_manager.screen_width - 800 - 35,
-                height=APP.window_manager.screen_height - 520 - 70,
-                on_enter=False,
+            dpg.bind_item_theme(self.tag + ".button.clip_main", "code_editor.clip.theme")
+            dpg.bind_item_theme(self.tag + ".button.clip_init", "code_editor.global.theme")
+            dpg.bind_item_theme(
+                self.tag + ".button.separator", "code_editor.separator.theme"
             )
+            
+            # TODO: Should create this in the value_registry
+            if clip is not None:
+                text_tag = get_code_window_tag(clip) + (
+                    ".main" if APP.code_view == CLIP_MAIN_CODE_VIEW else ".init"
+                ) + ".text"
 
-        dpg.bind_item_theme(self.tag + ".button.track", "code_editor.track.theme")
-        dpg.bind_item_theme(self.tag + ".button.clip", "code_editor.clip.theme")
-        dpg.bind_item_theme(self.tag + ".button.global", "code_editor.global.theme")
-        dpg.bind_item_theme(
-            self.tag + ".button.separator", "code_editor.separator.theme"
-        )
-
-        if isinstance(obj, model.Track):
-            dpg.bind_item_theme(self.tag + ".text", "code_editor.track.theme")
-        elif isinstance(obj, model.Clip):
-            dpg.bind_item_theme(self.tag + ".text", "code_editor.clip.theme")
-        else:  # State
-            dpg.bind_item_theme(self.tag + ".text", "code_editor.global.theme")
+                dpg.add_input_text(
+                    tag=self.tag + ".text",
+                    source=text_tag,
+                    multiline=True,
+                    readonly=False,
+                    tab_input=True,
+                    width=APP.window_manager.screen_width - 800 - 35,
+                    height=APP.window_manager.screen_height - 520 - 70,
+                    on_enter=False,
+                )
+                
+                dpg.bind_item_theme(
+                    text_tag, 
+                    "code_editor.global.theme" if APP.code_view == CLIP_INIT_CODE_VIEW else "code_editor.clip.theme"
+                )
 
 
 # TODO: Not being used
@@ -2898,8 +2903,15 @@ class ClipParametersWindow(ResettableWindow):
                                     with dpg.popup(
                                         f"{input_channel.id}.name_button", mousebutton=1
                                     ):
+                                        def copy(sender, app_data, user_data):
+                                            input_channel = user_data
+                                            clipboard.copy(input_channel.id)
+                                            self.state.log.append(f"Copied {input_channel.name}")
+
                                         dpg.add_menu_item(
                                             label="Copy",
+                                            callback=copy,
+                                            user_data=input_channel,
                                         )
                                         dpg.add_menu_item(
                                             label="Delete",
@@ -2908,9 +2920,36 @@ class ClipParametersWindow(ResettableWindow):
                                         )
 
                 # Right click for entire window
+
                 with dpg.popup("input_child_window_group", mousebutton=1):
+                    
+                    def paste(sender, app_data, user_data):
+                        with APP.lock:
+                            input_channel_id = clipboard.paste()
+                            if not input_channel_id:
+                                return
+                            
+                            result = APP.execute_wrapper(
+                                f"copy_channel_to_clip {APP._active_clip.id} {input_channel_id}"
+                            )
+                            if not result.success:
+                                return
+                            
+                            new_input_channel = result.payload
+                            APP.add_input_channel_callback(
+                                sender=None,
+                                app_data=None,
+                                user_data=(
+                                    "restore",
+                                    (APP._active_clip, new_input_channel),
+                                ),
+                            )
+                            self.reset()
+                            self.state.log.append(f"Pasted {new_input_channel.name} to {APP._active_clip.name}")
+
                     dpg.add_menu_item(
                         label="Paste",
+                        callback=paste,
                     )
 
                 with dpg.child_window(no_scrollbar=True):
@@ -3193,6 +3232,7 @@ class PresetConfigurationWindow(ResettableWindow):
             width=600,
             height=500,
             pos=(2 * SCREEN_WIDTH / 6, SCREEN_HEIGHT / 3),
+            show=False,
         )
 
     def configure_and_show(self, sender, app_data, user_data):
@@ -3369,3 +3409,56 @@ class PresetConfigurationWindow(ResettableWindow):
                     with dpg.group(horizontal=True):
                         dpg.add_button(label="Save", callback=save)
                         dpg.add_button(label="Cancel", callback=cancel)
+
+
+class PythonModulesWindow(ResettableWindow):
+    def __init__(self, state):
+        super().__init__(
+            state,
+            pos=(200, 100),
+            width=500,
+            height=400,
+            label="Python Modules",
+            tag="python_modules.gui.window",
+            show=False,
+        )
+
+        def load_python_module(sender, app_data, user_data):
+            filepath = app_data["file_path_name"]
+            if filepath not in self.state.custom_module_paths:
+                module_paths = [filepath]
+                data = json.dumps({"module_paths": module_paths})
+                result = APP.execute_wrapper(f"load_custom_modules {data}")
+                if result.success:
+                    self.reset(show=True, focus=True)
+
+        with dpg.file_dialog(
+            directory_selector=False,
+            show=False,
+            callback=load_python_module,
+            tag="open_python_module_dialog",
+            width=700,
+            height=400,
+            modal=True,
+        ):
+            dpg.add_file_extension(f".py", color=[255, 255, 0, 255])
+
+    def create(self):
+        with self.window:
+            dpg.add_button(
+                label="Add Module",
+                callback=lambda: dpg.configure_item("open_python_module_dialog", show=True),
+            )
+
+            with dpg.table(
+                tag="python_modules.table",
+                policy=dpg.mvTable_SizingStretchProp,
+            ):
+                dpg.add_table_column(label="Filepath")
+                dpg.add_table_column(label="")
+
+                for module_path in self.state.custom_module_paths:
+                    with dpg.table_row():
+                        dpg.add_text(default_value=module_path)
+                        dpg.add_button(label="X")
+                        

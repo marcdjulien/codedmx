@@ -2,7 +2,6 @@ import re
 import scipy
 import numpy as np
 import time
-import operator
 import uuid
 import math
 import threading
@@ -12,11 +11,14 @@ import logging
 import tempfile
 import os
 import traceback
+import importlib
+import sys
 
 from collections import defaultdict
 from pythonosc.dispatcher import Dispatcher
 from pythonosc import osc_server
 from pathlib import Path
+from threading import RLock
 
 import util
 import dmxio
@@ -47,9 +49,6 @@ TYPES = ["bool", "int", "float", "any"]
 UUID_DATABASE = {}
 
 ID_COUNT = 0
-
-GLOBAL_CODE_ID = "functions"
-
 
 def update_name(name, other_names):
     def toks(obj_name):
@@ -1007,22 +1006,17 @@ class Code:
         except Exception as e:
             STATE.log.append(e)
 
-    def run(self, pre, post, inputs, outputs):
+    def run(self, context):
         if self.compiled is not None:
-            for key, input_ in inputs.items():
-                inputs[key] = CodeEditorChannel(input_)
-                exec(f"{key} = inputs['{key}']")
-
-            for key, output_ in outputs.items():
-                outputs[key] = CodeEditorChannel(output_)
-                exec(f"{key} = outputs['{key}']")
-
-            _time = STATE.time_since_start_s
-            _beat = STATE.time_since_start_beat + 1
-
-            exec(pre.compiled)
-            exec(self.compiled)
-            exec(post.compiled)
+            context["_time"] = STATE.time_since_start_s
+            context["_beat"] = STATE.time_since_start_beat + 1
+            try:
+                exec(self.compiled, context)
+            except Exception as e:
+                logger.warning("Failed to execute: %s", self.file_path_name)
+                logger.warning(e)
+                STATE.log.append(traceback.format_exc())
+                raise
 
     def _update_path(self):
         if STATE.project_folder_path is not None:
@@ -1070,7 +1064,11 @@ class Clip(Identifier):
         self.time = 0
         self.playing = False
 
-        self.code = Code(self.id)
+        self.code_lock = RLock()
+        self.init_code = Code(self.id + "_init")
+        self.main_code = Code(self.id + "_main")
+        self._context = {}
+        self._module_paths = []
 
     def create_source(self, input_type):
         if input_type.startswith("osc_input"):
@@ -1092,7 +1090,7 @@ class Clip(Identifier):
         self.inputs.append(new_source)
         return new_source
 
-    def update(self, global_code, track_code, beat):
+    def update(self, beat):
         if self.playing:
             self.time = beat * (2**self.speed)
             for channel in self.inputs:
@@ -1100,19 +1098,12 @@ class Clip(Identifier):
                     continue
                 channel.update(self.time)
 
-            inputs = {src.name: src for src in self.inputs if not src.deleted}
-
-            outputs = {
-                output.name: output for output in self.outputs if not output.deleted
-            }
             try:
                 if self.global_clip:
                     self.run_global_code()
-                self.code.run(global_code, track_code, inputs, outputs)
+                with self.code_lock:
+                    self.main_code.run(self._context)
             except Exception as e:
-                logger.warning("Failed to execute: %s", self.code.file_path_name)
-                logger.warning(e)
-                STATE.log.append(traceback.format_exc())
                 self.stop()
 
     def run_global_code(self):
@@ -1124,6 +1115,50 @@ class Clip(Identifier):
         for input_ in self.inputs:
             GlobalStorage.set(input_.name, CodeEditorChannel(input_))
 
+    def reload_code(self, module_paths=None):
+        with self.code_lock:
+            self._context = {}
+
+            if not module_paths:
+                module_paths = self._module_paths
+
+            for module_path in module_paths:
+                module_name = os.path.basename(module_path).replace(".py", "")
+
+                if module_name in sys.modules:
+                    del sys.modules[module_name]
+
+                spec = importlib.util.spec_from_file_location(module_name, module_path)
+                module = importlib.util.module_from_spec(spec)
+
+                self._context.update(vars(module))
+
+            self._module_paths = module_paths
+
+            self._context["Global"] = GlobalStorage
+
+            inputs = {
+                src.name: src
+                for src in self.inputs
+                if not src.deleted}
+            outputs = {
+                output.name: output
+                for output in self.outputs
+                if not output.deleted
+            }
+            for key, input_ in inputs.items():
+                self._context[key] = CodeEditorChannel(input_)
+            for key, output_ in outputs.items():
+                self._context[key] = CodeEditorChannel(output_)
+
+            self.init_code.reload()
+            try:
+                self.init_code.run(self._context)
+            except Exception as e:
+                self.stop()
+                return
+            self.main_code.reload()
+
     def start(self, restart=True):
         if restart:
             self.time = 0
@@ -1131,7 +1166,7 @@ class Clip(Identifier):
         if self.playing:
             return
 
-        self.code.reload()
+        self.reload_code()
         self.playing = True
 
     def stop(self):
@@ -1153,7 +1188,6 @@ class Clip(Identifier):
         data.update(
             {
                 "name": self.name,
-                "code_file_path_name": self.code.file_path_name,
                 "speed": self.speed,
                 "inputs": [
                     channel.serialize()
@@ -1182,25 +1216,15 @@ class Clip(Identifier):
         self.outputs = [
             UUID_DATABASE[output_data["id"]] for output_data in data["outputs"]
         ]
-        self.code = Code(self.id)
-        self.code.reload()
+        self.init_code = Code(self.id + "_init")
+        self.main_code = Code(self.id + "_main")
+        self.init_code.reload()
+        self.main_code.reload()
 
         self.global_clip = data.get("global_clip", False)
 
         for input_data in data["inputs"]:
-            if input_data["input_type"] in cast.keys():
-                channel = AutomatableSourceNode()
-            elif input_data["input_type"].startswith("osc_input_"):
-                channel = OscInput()
-            elif input_data["input_type"] == "midi":
-                channel = MidiInput()
-            elif input_data["input_type"] == "color":
-                channel = ColorNode()
-            elif input_data["input_type"] == "button":
-                channel = ButtonNode()
-            else:
-                raise RuntimeError("Failed to find node type")
-            channel.deserialize(input_data)
+            channel = deserialize_input_channel(input_data)
             self.inputs.append(channel)
 
         for preset_data in data["presets"]:
@@ -1209,6 +1233,28 @@ class Clip(Identifier):
             self.presets.append(clip_preset)
 
 
+def deserialize_input_channel(input_data):
+    if "input_type" not in input_data:
+        return None
+    
+    channel = None
+    if input_data["input_type"] in cast.keys():
+        channel = AutomatableSourceNode()
+    elif input_data["input_type"].startswith("osc_input_"):
+        channel = OscInput()
+    elif input_data["input_type"] == "midi":
+        channel = MidiInput()
+    elif input_data["input_type"] == "color":
+        channel = ColorNode()
+    elif input_data["input_type"] == "button":
+        channel = ButtonNode()
+    else:
+        raise RuntimeError("Failed to find node type")
+    
+    if channel:
+        channel.deserialize(input_data)
+        return channel
+    
 class Sequence(Identifier):
     def __init__(self, name="", sequence_info=()):
         super().__init__()
@@ -1268,12 +1314,11 @@ class Track(Identifier):
         self.name = name
         self.clips = [None] * n_clips
         self.outputs = []
-        self.code = Code(self.id)
         self.sequences = []
         self.sequence = None
         self.global_track = global_track
 
-    def update(self, global_code, beat):
+    def update(self, beat):
         if self.sequence is not None:
             seq_clip, preset = self.sequence.current_clip(beat)
             # Always execute the preset
@@ -1290,7 +1335,7 @@ class Track(Identifier):
 
         for clip in self.clips:
             if clip is not None:
-                clip.update(global_code, self.code, beat)
+                clip.update(beat)
 
         for output in self.outputs:
             if output.deleted:
@@ -1361,7 +1406,6 @@ class Track(Identifier):
 
     def deserialize(self, data):
         super().deserialize(data)
-        self.code = Code(self.id)
 
         self.name = data["name"]
         n_clips = len(data["clips"])
@@ -1844,7 +1888,7 @@ class ProgramState(Identifier):
         self.io_outputs = [None] * 5
         self.io_inputs = [None] * 5
 
-        self.global_vars = {}
+        self.custom_module_paths = []
         self.key_channel_map = {}
 
         self.playing = False
@@ -1854,7 +1898,6 @@ class ProgramState(Identifier):
         self.time_since_start_s = 0
 
         self.multi_clip_presets = []
-        self.code = Code(GLOBAL_CODE_ID)
 
         self.trigger_manager = TriggerManager()
 
@@ -1874,17 +1917,6 @@ class ProgramState(Identifier):
         if self.playing:
             return
 
-        # Load global functions
-        try:
-            self.code.reload()
-            for track in self.tracks:
-                track.code.reload()
-        except Exception as e:
-            logger.warning("Failed to execute: %s", self.code.file_path_name)
-            logger.warning(e)
-            self.log.append(traceback.format_exc())
-            return
-
         # Start playing
         self.playing = True
         self.play_time_start_s = time.time()
@@ -1893,8 +1925,8 @@ class ProgramState(Identifier):
         self.playing = False
 
     def update(self):
-        # Update timing
         if self.playing:
+            # Update timing
             self.time_since_start_s = time.time() - self.play_time_start_s
             self.time_since_start_beat = util.seconds_to_beats(
                 self.time_since_start_s, self.tempo
@@ -1902,7 +1934,7 @@ class ProgramState(Identifier):
 
             # Update values
             for track in self.tracks:
-                track.update(self.code, self.time_since_start_beat)
+                track.update(self.time_since_start_beat)
 
             # Update DMX outputs
             all_track_outputs = []
@@ -1930,6 +1962,7 @@ class ProgramState(Identifier):
             "multi_clip_presets": [
                 mcp.serialize() for mcp in self.multi_clip_presets
             ],
+            "custom_module_paths": self.custom_module_paths,
         }
 
         return data
@@ -1941,7 +1974,7 @@ class ProgramState(Identifier):
 
         self.tempo = data["tempo"]
         self.project_name = data["project_name"]
-        self.code = Code(GLOBAL_CODE_ID)
+        self.custom_module_paths = data.get("custom_module_paths", [])
 
         for i, track_data in enumerate(data["tracks"]):
             new_track = Track()
@@ -1982,6 +2015,11 @@ class ProgramState(Identifier):
             self.update()
             self.execute(f"toggle_clip {self.global_track.id} {clip.id}")
         self.stop()
+
+        for track in self.tracks:
+            for clip in track.clips:
+                if util.valid(clip):
+                    clip.reload_code(self.custom_module_paths)
 
     def duplicate_obj(self, obj):
         data = obj.serialize()
@@ -2052,6 +2090,7 @@ class ProgramState(Identifier):
             track = self.get_obj(track_id)
             assert clip_i < len(track.clips)
             track[clip_i] = Clip(f"Controller #{clip_i}", track.outputs, global_clip=track.global_track)
+            track[clip_i].reload_code(self.custom_module_paths)
             return Result(True, track[clip_i])
 
         elif cmd == "create_source":
@@ -2298,7 +2337,8 @@ class ProgramState(Identifier):
             new_track = self.tracks[int(new_track_i)]
             old_clip = self.get_obj(clip_id)
             new_clip = self.duplicate_obj(old_clip)
-            new_clip.code.save(old_clip.code.read())
+            new_clip.init_code.save(old_clip.init_code.read())
+            new_clip.main_code.save(old_clip.main_code.read())
             new_track[new_clip_i] = new_clip
             return Result(True, new_clip)
 
@@ -2338,6 +2378,15 @@ class ProgramState(Identifier):
             preset = self.get_obj(preset_id)
             new_preset = clip.add_preset(preset.name, preset.presets)
             return Result(True, new_preset)
+        
+        elif cmd == "copy_channel_to_clip":
+            clip_id = toks[1]
+            input_channel_id = toks[2]
+            clip = self.get_obj(clip_id)
+            input_channel = self.get_obj(input_channel_id)
+            new_input_channel = self.duplicate_obj(input_channel)
+            clip.inputs.append(new_input_channel)
+            return Result(True, new_input_channel)
 
         elif cmd == "midi_map":
             obj_id = toks[1]
@@ -2385,6 +2434,21 @@ class ProgramState(Identifier):
             old_device.reset()
 
             return Result(True, new_device)
+
+        elif cmd == "load_custom_modules":
+            data_string = " ".join(toks[1::])
+            data = json.loads(data_string)
+
+            modules = data["module_paths"]
+            for module_path in modules:
+                self.custom_module_paths.append(module_path)
+
+            for track in self.tracks:
+                for clip in track.clips:
+                    if util.valid(clip):
+                        clip.reload_code(self.custom_module_paths)
+            
+            return Result(True)
 
     def get_obj(self, id_):
         return UUID_DATABASE[id_]

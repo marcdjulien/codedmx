@@ -4,3 +4,4 @@ scipy
 python-osc
 mido
 python-rtmidi==1.5.6
+clipboard
